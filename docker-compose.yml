@@ -1,0 +1,13 @@
+services:
+  docker-image-checker-king:
+    image: victoare/docker-image-checker-king:latest
+    container_name: docker-image-checker-king
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    environment:
+      - AUTO_CHECK_FAST_MINUTES=60
+      - AUTO_CHECK_MINUTES=360
+    restart: unless-stopped

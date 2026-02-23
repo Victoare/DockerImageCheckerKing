@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Image Checker King</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png">
+  <link rel="manifest" href="/favicon/site.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Prevent flash of wrong theme -->
+  <script>
+    (function () {
+      var saved = localStorage.getItem('docker-checker-theme');
+      var theme;
+      if (saved === 'light' || saved === 'dark') {
+        theme = saved;
+      } else {
+        theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+</head>
+
+<body>
+  <div class="bg-logo">
+    <img src="/favicon/android-chrome-192x192.png" alt="">
+  </div>
+  <div class="app">
+    <div class="header">
+      <div class="header-icon"><img src="/favicon/android-chrome-192x192.png" alt="Docker Image Checker King"
+          class="header-logo"></div>
+      <div class="header-text">
+        <h1>Docker Image Checker King</h1>
+        <p>Compare local image digests against registry — no pulls required <span id="appVersion" class="app-version"></span></p>
+      </div>
+      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Switch theme">
+        <span class="icon-sun">☀️</span>
+        <span class="icon-moon">🌙</span>
+      </button>
+    </div>
+
+    <div class="rate-limits" id="rateLimits"></div>
+
+    <div class="progress-area" id="progressArea">
+      <div class="progress-text">
+        <span id="progressLabel">Checking...</span>
+        <span id="progressCount">0 / 0</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <div class="stats" id="statsArea">
+      <div class="stat-card up-to-date" onclick="filterRows('UpToDate')">
+        <div class="stat-value" id="statUpToDate">0</div>
+        <div class="stat-label">Up to date</div>
+      </div>
+      <div class="stat-card outdated" onclick="filterRows('Outdated')">
+        <div class="stat-value" id="statOutdated">0</div>
+        <div class="stat-label">Outdated</div>
+      </div>
+      <div class="stat-card unknown" onclick="filterRows('Unknown')">
+        <div class="stat-value" id="statUnknown">0</div>
+        <div class="stat-label">Unknown</div>
+      </div>
+      <div class="stat-card total" onclick="filterRows('all')">
+        <div class="stat-value" id="statTotal">0</div>
+        <div class="stat-label">Total</div>
+      </div>
+    </div>
+
+    <div class="table-container" id="tableContainer">
+      <div class="table-header-bar">
+        <div class="table-header-left">
+          <h2>Results</h2>
+          <span id="lastCheckedLabel" class="last-checked-label"></span>
+          <span id="nextCheckLabel" class="last-checked-label"></span>
+        </div>
+        <button class="btn-check" id="btnCheck" onclick="startCheck()">
+          <span class="spinner"></span>
+          <span class="btn-check-text">Check Now</span>
+          <span class="btn-icon">🔎</span>          
+        </button>
+      </div>
+      <div class="table-scroll-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-expand"></th>
+              <th class="col-state"><span class="col-state-text">State</span></th>
+              <th class="col-container">Container</th>
+              <th class="col-registry">Registry</th>
+              <th class="col-image">Image</th>
+              <th class="col-tag">Tag</th>
+              <th class="col-status">Status</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon"><img src="/favicon/android-chrome-192x192.png" alt="" class="empty-logo"></div>
+        <p>Click <strong>Check Images</strong> to compare your containers against their registry digests.</p>
+      </div>
+    </div>
+
+    <div class="log-panel" id="logPanel">
+      <div class="log-panel-header" onclick="toggleLogPanel()" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+        <span>Activity Log</span>
+        <span id="logToggleIcon" style="font-size:14px;transition:transform 0.2s;">▼</span>
+      </div>
+      <div class="log-content" id="logContent"></div>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div class="modal-overlay" id="confirmModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <span style="font-size: 24px;">⚠️</span>
+          <h3>Update Container?</h3>
+        </div>
+        <div class="modal-body">
+          <p id="confirmModalText">Are you sure you want to update?</p>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" onclick="closeConfirmModal(false)">Cancel</button>
+          <button class="modal-btn modal-btn-confirm" id="confirmBtn" onclick="closeConfirmModal(true)">Start
+            Update</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // Theme
+    // =========================================================================
+    var THEME_KEY = 'docker-checker-theme';
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+
+    function toggleTheme() {
+      var current = document.documentElement.getAttribute('data-theme');
+      var next = current === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      localStorage.setItem(THEME_KEY, next);
+    }
+
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
+      if (!localStorage.getItem(THEME_KEY)) {
+        applyTheme(e.matches ? 'light' : 'dark');
+      }
+    });
+
+    // =========================================================================
+    // App state
+    // =========================================================================
+    var APP = {
+      results: [],
+      filter: 'all',
+      nextCheckIso: null,
+      countdownInterval: null,
+      logPanelOpen: true,
+      modalCallback: null
+    };
+
+    // =========================================================================
+    // Check Images
+    // =========================================================================
+    function startCheck() {
+      var btn = document.getElementById('btnCheck');
+
+      btn.classList.add('loading');
+      btn.disabled = true;
+
+      APP.results = [];
+      document.getElementById('resultsBody').innerHTML = '';
+      document.getElementById('progressArea').classList.add('visible');
+      document.getElementById('statsArea').classList.remove('visible');
+
+      document.getElementById('emptyState').style.display = 'none';
+      document.getElementById('logPanel').classList.add('visible');
+      document.getElementById('logContent').innerHTML = '';
+      updateStats();
+      setProgress(0, 0);
+
+      var evtSource = new EventSource('/api/check?includeStopped=true');
+      var total = 0;
+
+      evtSource.addEventListener('total', function (e) {
+        var data = JSON.parse(e.data);
+        total = data.count;
+        addLog('Found ' + total + ' container(s) to check.', 'ok');
+      });
+
+      evtSource.addEventListener('progress', function (e) {
+        var data = JSON.parse(e.data);
+        setProgress(data.index, data.total);
+        document.getElementById('progressLabel').textContent = 'Checking ' + data.container + '...';
+        addLog('Checking: ' + data.container + ' (' + data.image + ')');
+      });
+
+      evtSource.addEventListener('result', function (e) {
+        var row = JSON.parse(e.data);
+        APP.results.push(row);
+        appendRow(row, APP.results.length);
+        updateStats();
+      });
+
+      evtSource.addEventListener('done', function (e) {
+        evtSource.close();
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        setProgress(total, total);
+        document.getElementById('progressArea').classList.remove('visible');
+        document.getElementById('statsArea').classList.add('visible');
+        sortResults();
+        renderAllRows();
+        updateLastCheckedLabel(new Date().toISOString());
+        fetchNextCheck();
+        fetchRateLimits();
+
+        var outdated = APP.results.filter(function (r) { return r.result === 'Outdated'; }).length;
+        if (outdated > 0) {
+          addLog('Finished. ' + outdated + ' container(s) need updating.', 'warn');
+        } else {
+          addLog('Finished. All containers are up to date!', 'ok');
+        }
+
+        // Restore any persisted update logs into the detail rows
+        restoreUpdateLogs();
+        // Reconnect to any active updates
+        reconnectActiveUpdates();
+
+        // Collapse log if everything is OK (no outdated, no unknown)
+        var unknown = APP.results.filter(function (r) { return r.result === 'Unknown'; }).length;
+        if (outdated === 0 && unknown === 0) {
+          collapseLogPanel();
+        }
+      });
+
+      evtSource.addEventListener('error', function (e) {
+        if (e.data) {
+          var data = JSON.parse(e.data);
+          addLog('Error: ' + data.message, 'error');
+        }
+        evtSource.close();
+        btn.classList.remove('loading');
+        btn.disabled = false;
+      });
+
+      evtSource.onerror = function () {
+        evtSource.close();
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        addLog('Connection lost.', 'error');
+      };
+    }
+
+    var STATE_ORDER = { running: 0, created: 1, exited: 2 };
+    var RESULT_ORDER = { Outdated: 0, UpToDate: 1, Unknown: 2, NoLocalDigest: 3, Pinned: 4 };
+
+    function sortResults() {
+      APP.results.sort(function (a, b) {
+        var sa = STATE_ORDER[a.state] !== undefined ? STATE_ORDER[a.state] : 9;
+        var sb = STATE_ORDER[b.state] !== undefined ? STATE_ORDER[b.state] : 9;
+        if (sa !== sb) return sa - sb;
+        var ra = RESULT_ORDER[a.result] !== undefined ? RESULT_ORDER[a.result] : 9;
+        var rb = RESULT_ORDER[b.result] !== undefined ? RESULT_ORDER[b.result] : 9;
+        if (ra !== rb) return ra - rb;
+        return a.container.localeCompare(b.container);
+      });
+    }
+
+    function renderAllRows() {
+      document.getElementById('resultsBody').innerHTML = '';
+      for (var i = 0; i < APP.results.length; i++) appendRow(APP.results[i], i + 1);
+      updateStats();
+      filterRows(APP.filter);
+    }
+
+    function setProgress(current, total) {
+      var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressCount').textContent = current + ' / ' + total;
+    }
+
+    function updateStats() {
+      var counts = { UpToDate: 0, Outdated: 0, Unknown: 0 };
+      APP.results.forEach(function (r) {
+        if (counts.hasOwnProperty(r.result)) counts[r.result]++;
+      });
+      document.getElementById('statUpToDate').textContent = counts.UpToDate;
+      document.getElementById('statOutdated').textContent = counts.Outdated;
+      document.getElementById('statUnknown').textContent = counts.Unknown;
+      document.getElementById('statTotal').textContent = APP.results.length;
+    }
+
+    function appendRow(row, idx) {
+      var tbody = document.getElementById('resultsBody');
+      var stateClass = row.state === 'running' ? 'state-running'
+        : row.state === 'exited' ? 'state-exited'
+          : 'state-other';
+      var resultLabels = {
+        UpToDate: 'Up to date', Outdated: 'Outdated', Unknown: 'Unknown',
+        Pinned: 'Pinned', NoLocalDigest: 'No digest'
+      };
+      var resultShort = {
+        UpToDate: '👍', Outdated: '👴', Unknown: '🤷', Pinned: '📌', NoLocalDigest: '?'
+      };
+
+      var tr = document.createElement('tr');
+      tr.className = 'result-row';
+      tr.dataset.result = row.result;
+      tr.dataset.idx = idx;
+      tr.dataset.container = row.container;
+      tr.dataset.image = row.image;
+      if (row.result === 'Outdated') tr.classList.add('row-outdated');
+      if (row.result === 'Unknown') tr.classList.add('row-unknown');
+      if (APP.filter !== 'all' && row.result !== APP.filter) tr.style.display = 'none';
+
+      var dotClass = row.state === 'running' ? 'state-dot-running' : row.state === 'exited' ? 'state-dot-exited' : 'state-dot-other';
+
+      var updateBtnMain = '';
+      if (row.result === 'Outdated') {
+        updateBtnMain =
+          '<button class="btn-update-inline" id="btn-update-main-' + idx + '" onclick="startUpdate(\'' + esc(row.container) + '\', \'' + esc(row.image) + '\', ' + idx + ', event)">' +
+          '<span class="update-spinner"></span><span class="update-btn-icon">⬆</span><span class="update-text"> Update</span></button>';
+      }
+
+      tr.innerHTML =
+        '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" onclick="toggleDetail(' + idx + ')">&#8250;</button></td>' +
+        '<td class="col-state"><span class="state-dot-mobile ' + dotClass + '"></span><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></td>' +
+        '<td class="col-container"><span class="container-name">' + esc(row.container) + '</span></td>' +
+        '<td class="col-registry"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--text-dim);">' + esc(row.registry) + '</span></td>' +
+        '<td class="col-image"><span class="image-name">' + esc(row.image) + '</span></td>' +
+        '<td class="col-tag"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></td>' +
+        '<td class="col-status"><span class="result-badge result-' + row.result + '"><span class="dot"></span><span class="result-full">' + (resultLabels[row.result] || row.result) + '</span><span class="result-short">' + (resultShort[row.result] || '?') + '</span></span></td>' +
+        '<td class="col-actions">' + updateBtnMain + '</td>';
+      tbody.appendChild(tr);
+
+      // Detail row
+      var dr = document.createElement('tr');
+      dr.className = 'detail-row';
+      dr.id = 'detail-' + idx;
+      if (row.result === 'Outdated') dr.classList.add('row-outdated');
+      if (row.result === 'Unknown') dr.classList.add('row-unknown');
+
+      // Build update button HTML (only for Outdated)
+      var updateBtnHtml = '';
+      if (row.result === 'Outdated') {
+        updateBtnHtml =
+          '<div class="update-action">' +
+          '<button class="btn-update" id="btn-update-' + idx + '" onclick="startUpdate(\'' + esc(row.container) + '\', \'' + esc(row.image) + '\', ' + idx + ')">' +
+          '<span class="update-spinner"></span>' +
+          '<span class="update-btn-icon">⬆</span> Update' +
+          '</button>' +
+          '</div>';
+      }
+
+      dr.innerHTML =
+        '<td colspan="8" class="detail-cell">' +
+        '<div class="detail-content">' +
+        '<div class="detail-item detail-registry"><span class="detail-label">Registry</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--text-dim);">' + esc(row.registry) + '</span></div>' +
+        '<div class="detail-item detail-image"><span class="detail-label">Image</span><span class="detail-value"><span class="image-name">' + esc(row.image) + '</span></span></div>' +
+        '<div class="detail-item detail-tag"><span class="detail-label">Tag</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></div>' +
+        '<div class="detail-item detail-state"><span class="detail-label">State</span><span class="detail-value"><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></span></div>' +
+        '<div class="detail-item detail-status"><span class="detail-label">Status</span><span class="detail-value"><span class="result-badge result-' + row.result + '"><span class="dot"></span>' + (resultLabels[row.result] || row.result) + '</span></span></div>' +
+        '<div class="detail-item"><span class="detail-label">Local Digest</span><span class="detail-value digest-val">' + esc(row.localDigest) + '</span></div>' +
+        '<div class="detail-item"><span class="detail-label">Remote Digest</span><span class="detail-value digest-val">' + esc(row.remoteDigest) + '</span></div>' +
+        '</div>' +
+        '<div class="update-log-wrap" id="update-log-wrap-' + idx + '" style="display:none">' +
+        '<div class="update-log-header"><span class="update-log-title">Update Log</span><span class="update-log-status" id="update-log-status-' + idx + '"></span></div>' +
+        '<div class="update-log" id="update-log-' + idx + '"></div>' +
+        '</div>' +
+        '</td>';
+      tbody.appendChild(dr);
+    }
+
+    function toggleDetail(idx) {
+      var detail = document.getElementById('detail-' + idx);
+      var btn = document.getElementById('expand-' + idx);
+      var isOpen = detail.style.display === 'table-row';
+      detail.style.display = isOpen ? 'none' : 'table-row';
+      btn.classList.toggle('open', !isOpen);
+    }
+
+    function esc(s) {
+      var d = document.createElement('div');
+      d.textContent = s || '';
+      return d.innerHTML;
+    }
+
+    function filterRows(filter) {
+      APP.filter = filter;
+
+      var cards = document.querySelectorAll('.stat-card');
+      for (var k = 0; k < cards.length; k++) cards[k].classList.remove('active-filter');
+      var filterToCard = { 'UpToDate': 'up-to-date', 'Outdated': 'outdated', 'Unknown': 'unknown', 'all': 'total' };
+      if (filterToCard[filter]) {
+        var activeCard = document.querySelector('.stat-card.' + filterToCard[filter]);
+        if (activeCard) activeCard.classList.add('active-filter');
+      }
+
+      var rows = document.querySelectorAll('#resultsBody tr.result-row');
+      for (var j = 0; j < rows.length; j++) {
+        var show = filter === 'all' || rows[j].dataset.result === filter;
+        rows[j].style.display = show ? '' : 'none';
+        var detail = document.getElementById('detail-' + rows[j].dataset.idx);
+        if (detail && !show) detail.style.display = 'none';
+      }
+    }
+
+    function updateLastCheckedLabel(isoString) {
+      var el = document.getElementById('lastCheckedLabel');
+      var date = new Date(isoString);
+      el.textContent = 'Last checked: ' + date.toLocaleString();
+      el.classList.add('visible');
+    }
+
+    function restoreLastResult() {
+      fetch('/api/last-result')
+        .then(function (r) { return r.json(); })
+        .then(function (cache) {
+          if (!cache || !cache.results || !cache.results.length) return;
+          APP.results = cache.results;
+          document.getElementById('statsArea').classList.add('visible');
+          document.getElementById('emptyState').style.display = 'none';
+          sortResults();
+          renderAllRows();
+          updateLastCheckedLabel(cache.timestamp);
+
+          // Restore persisted update logs + reconnect to any active updates
+          restoreUpdateLogs();
+          reconnectActiveUpdates();
+        })
+        .catch(function () { });
+    }
+
+    restoreLastResult();
+
+    fetch('/api/version').then(function(r){return r.json();}).then(function(d){
+      if(d&&d.version)document.getElementById('appVersion').textContent='v'+d.version;
+    }).catch(function(){});
+
+    // =========================================================================
+    // Auto-check countdown
+    // =========================================================================
+    function fetchNextCheck() {
+      fetch('/api/next-check')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data || !data.nextAutoCheck) return;
+          APP.nextCheckIso = data.nextAutoCheck;
+          startCountdown();
+        })
+        .catch(function () { });
+    }
+
+    function startCountdown() {
+      if (APP.countdownInterval) clearInterval(APP.countdownInterval);
+      updateCountdownLabel();
+      APP.countdownInterval = setInterval(function () {
+        var remaining = updateCountdownLabel();
+        if (remaining !== null && remaining <= 0) {
+          clearInterval(APP.countdownInterval);
+          // Wait a bit for the server to finish, then reload results
+          setTimeout(function () {
+            reloadResults();
+            fetchNextCheck();
+            fetchRateLimits();
+          }, 15000);
+        }
+      }, 1000);
+    }
+
+    function updateCountdownLabel() {
+      var el = document.getElementById('nextCheckLabel');
+      if (!APP.nextCheckIso) { el.classList.remove('visible'); return null; }
+      var remaining = new Date(APP.nextCheckIso).getTime() - Date.now();
+      if (remaining <= 0) {
+        el.textContent = 'Auto-check running…';
+        el.classList.add('visible');
+        return 0;
+      }
+      var h = Math.floor(remaining / 3600000);
+      var m = Math.floor((remaining % 3600000) / 60000);
+      var s = Math.floor((remaining % 60000) / 1000);
+      var parts = [];
+      if (h > 0) parts.push(h + 'h');
+      if (m > 0) parts.push(m + 'm');
+      parts.push(s + 's');
+      el.textContent = 'Next auto-check: ' + parts.join(' ');
+      el.classList.add('visible');
+      return remaining;
+    }
+
+    function reloadResults() {
+      fetch('/api/last-result')
+        .then(function (r) { return r.json(); })
+        .then(function (cache) {
+          if (!cache || !cache.results || !cache.results.length) return;
+          APP.results = cache.results;
+          document.getElementById('statsArea').classList.add('visible');
+          document.getElementById('emptyState').style.display = 'none';
+          sortResults();
+          renderAllRows();
+          updateLastCheckedLabel(cache.timestamp);
+          restoreUpdateLogs();
+          reconnectActiveUpdates();
+        })
+        .catch(function () { });
+    }
+
+    fetchNextCheck();
+
+    // =========================================================================
+    // Rate limits display
+    // =========================================================================
+    function fetchRateLimits() {
+      fetch('/api/rate-limits')
+        .then(function (r) { return r.json(); })
+        .then(function (limits) {
+          if (!limits || Object.keys(limits).length === 0) return;
+          var container = document.getElementById('rateLimits');
+          container.innerHTML = '';
+          for (var registry in limits) {
+            if (!limits.hasOwnProperty(registry)) continue;
+            var info = limits[registry];
+            if (info.limit === null && info.remaining === null) continue;
+            var pct = (info.limit && info.remaining !== null) ? Math.round((info.remaining / info.limit) * 100) : 100;
+            // Hide if remaining equals limit (no usage / no real info)
+            if (info.remaining !== null && info.limit !== null && info.remaining >= info.limit) continue;
+            var color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--yellow)' : 'var(--red)';
+            var item = document.createElement('div');
+            item.className = 'rate-limit-item';
+            item.innerHTML =
+              '<span class="rate-limit-registry">' + esc(registry) + '</span>' +
+              '<div class="rate-limit-bar"><div class="rate-limit-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+              '<span>' + (info.remaining !== null ? info.remaining : '?') + ' / ' + (info.limit !== null ? info.limit : '?') + '</span>';
+            container.appendChild(item);
+          }
+          container.classList.add('visible');
+        })
+        .catch(function () { });
+    }
+
+    fetchRateLimits();
+
+    function toggleLogPanel() {
+      APP.logPanelOpen = !APP.logPanelOpen;
+      document.getElementById('logContent').style.display = APP.logPanelOpen ? '' : 'none';
+      document.getElementById('logToggleIcon').style.transform = APP.logPanelOpen ? '' : 'rotate(-90deg)';
+    }
+    function collapseLogPanel() {
+      APP.logPanelOpen = false;
+      document.getElementById('logContent').style.display = 'none';
+      document.getElementById('logToggleIcon').style.transform = 'rotate(-90deg)';
+    }
+
+    function addLog(msg, type) {
+      var el = document.getElementById('logContent');
+      var line = document.createElement('div');
+      line.className = 'log-line' + (type ? ' ' + type : '');
+      line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // =========================================================================
+    // Update feature
+    // =========================================================================
+
+    // Map container name -> idx (for finding the right detail row)
+    function getIdxByContainer(container) {
+      var rows = document.querySelectorAll('#resultsBody tr.result-row');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].dataset.container === container) return rows[i].dataset.idx;
+      }
+      return null;
+    }
+
+    function addUpdateLog(idx, line) {
+      var logEl = document.getElementById('update-log-' + idx);
+      if (!logEl) return;
+      var wrapEl = document.getElementById('update-log-wrap-' + idx);
+      if (wrapEl) wrapEl.style.display = '';
+
+      var div = document.createElement('div');
+      div.className = 'update-log-line' + (line.type ? ' ' + line.type : '');
+      var ts = line.time ? '[' + new Date(line.time).toLocaleTimeString() + '] ' : '';
+      div.textContent = ts + line.msg;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setUpdateStatus(idx, status) {
+      var el = document.getElementById('update-log-status-' + idx);
+      if (!el) return;
+      el.textContent = status;
+      el.className = 'update-log-status update-status-' + status;
+    }
+
+    function setUpdateButtonState(idx, state) {
+      var btn = document.getElementById('btn-update-main-' + idx);
+      if (!btn) return;
+      if (state === 'running') {
+        btn.classList.add('loading');
+        btn.disabled = true;
+      } else {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        // If was successful, we might hide/remove it
+      }
+    }
+
+    function startUpdate(container, image, idx, event) {
+      if (event) event.stopPropagation();
+
+      showConfirmModal(
+        'Update container <strong>' + esc(container) + '</strong> to newest image <strong>' + esc(image) + '</strong>?',
+        function () {
+          executeStartUpdate(container, image, idx);
+        }
+      );
+    }
+
+    function executeStartUpdate(container, image, idx) {
+      // Show detail row if not open
+      var detail = document.getElementById('detail-' + idx);
+      if (detail && detail.style.display !== 'table-row') {
+        toggleDetail(idx);
+      }
+
+      // Clear old log
+      var logEl = document.getElementById('update-log-' + idx);
+      if (logEl) logEl.innerHTML = '';
+      setUpdateStatus(idx, 'running');
+      setUpdateButtonState(idx, 'running');
+
+      // POST to start update
+      fetch('/api/update/' + encodeURIComponent(container), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: image })
+      })
+        .then(function (r) {
+          if (r.status === 409) {
+            addUpdateLog(idx, { msg: 'Update already in progress, reconnecting…', type: 'warn' });
+          } else if (!r.ok) {
+            return r.json().then(function (d) {
+              addUpdateLog(idx, { msg: 'Failed to start update: ' + (d.error || r.status), type: 'error' });
+              setUpdateButtonState(idx, 'idle');
+            });
+          }
+          // Open SSE stream
+          subscribeUpdateStream(container, idx);
+        })
+        .catch(function (e) {
+          addUpdateLog(idx, { msg: 'Network error: ' + e.message, type: 'error' });
+          setUpdateButtonState(idx, 'idle');
+        });
+    }
+
+    function subscribeUpdateStream(container, idx) {
+      var src = new EventSource('/api/update/' + encodeURIComponent(container) + '/stream');
+
+      src.addEventListener('log', function (e) {
+        var line = JSON.parse(e.data);
+        addUpdateLog(idx, line);
+      });
+
+      src.addEventListener('status', function (e) {
+        var data = JSON.parse(e.data);
+        src.close();
+        if (data.status === 'none') {
+          // No active update — show nothing extra
+          return;
+        }
+        setUpdateStatus(idx, data.status);
+        setUpdateButtonState(idx, 'idle');
+
+        if (data.status === 'done') {
+          addLog('Update completed for ' + container, 'ok');
+          // Update UI state to Up to date
+          updateRowToUpToDate(idx);
+        } else {
+          addLog('Update failed for ' + container, 'error');
+        }
+      });
+
+      src.onerror = function () {
+        src.close();
+        setUpdateButtonState(idx, 'idle');
+      };
+    }
+
+    // Restore persisted update logs into the detail rows
+    function restoreUpdateLogs() {
+      fetch('/api/update-logs')
+        .then(function (r) { return r.json(); })
+        .then(function (logs) {
+          if (!logs) return;
+          for (var container in logs) {
+            if (!logs.hasOwnProperty(container)) continue;
+            var idx = getIdxByContainer(container);
+            if (idx === null) continue;
+            var entry = logs[container];
+            // Clear and repopulate log
+            var logEl = document.getElementById('update-log-' + idx);
+            if (logEl) logEl.innerHTML = '';
+            if (entry.log && entry.log.length) {
+              var wrapEl = document.getElementById('update-log-wrap-' + idx);
+              if (wrapEl) wrapEl.style.display = '';
+              for (var i = 0; i < entry.log.length; i++) {
+                addUpdateLog(idx, entry.log[i]);
+              }
+            }
+            setUpdateStatus(idx, entry.status);
+          }
+        })
+        .catch(function () { });
+    }
+
+    // Reconnect SSE for containers that have an active update
+    function reconnectActiveUpdates() {
+      fetch('/api/update-status')
+        .then(function (r) { return r.json(); })
+        .then(function (statuses) {
+          if (!statuses) return;
+          for (var container in statuses) {
+            if (!statuses.hasOwnProperty(container)) continue;
+            if (statuses[container].status === 'running') {
+              var idx = getIdxByContainer(container);
+              if (idx === null) continue;
+              // Auto open if running
+              var detail = document.getElementById('detail-' + idx);
+              if (detail && detail.style.display !== 'table-row') toggleDetail(idx);
+
+              setUpdateButtonState(idx, 'running');
+              setUpdateStatus(idx, 'running');
+              subscribeUpdateStream(container, idx);
+            }
+          }
+        })
+        .catch(function (e) { });
+    }
+
+    function updateRowToUpToDate(idx) {
+      var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+      if (!row) return;
+
+      row.result = 'UpToDate';
+      // Deep clone check: update visual badge in table
+      var tr = document.querySelector('tr.result-row[data-idx="' + idx + '"]');
+      if (tr) {
+        tr.dataset.result = 'UpToDate';
+        tr.classList.remove('row-outdated');
+        var badge = tr.querySelector('.result-badge');
+        if (badge) {
+          badge.className = 'result-badge result-UpToDate';
+          badge.innerHTML = '<span class="dot"></span><span class="result-full">Up to date</span><span class="result-short">👍</span>';
+        }
+        // Remove the update button
+        var actions = tr.querySelector('.col-actions');
+        if (actions) actions.innerHTML = '';
+      }
+      updateStats();
+    }
+
+    // =========================================================================
+    // Modal logic
+    // =========================================================================
+    function showConfirmModal(html, callback) {
+      document.getElementById('confirmModalText').innerHTML = html;
+      APP.modalCallback = callback;
+      var modal = document.getElementById('confirmModal');
+      modal.style.display = 'flex';
+      setTimeout(function () { modal.classList.add('visible'); }, 10);
+    }
+
+    function closeConfirmModal(confirmed) {
+      var modal = document.getElementById('confirmModal');
+      modal.classList.remove('visible');
+      setTimeout(function () {
+        modal.style.display = 'none';
+        if (confirmed && APP.modalCallback) APP.modalCallback();
+        APP.modalCallback = null;
+      }, 300);
+    }
+
+    // Close modal on escape or backdrop click
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeConfirmModal(false);
+    });
+    document.getElementById('confirmModal').addEventListener('click', function (e) {
+      if (e.target === this) closeConfirmModal(false);
+    });
+  </script>
+</body>
+
+</html>

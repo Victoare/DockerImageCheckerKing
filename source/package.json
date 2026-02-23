@@ -1,0 +1,12 @@
+{
+  "name": "docker-image-checker",
+  "version": "1.0.0",
+  "description": "Web UI to check Docker containers for outdated images",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
