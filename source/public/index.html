@@ -25,6 +25,7 @@
         theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       }
       document.documentElement.setAttribute('data-theme', theme);
+      document.documentElement.setAttribute('data-theme-mode', (saved === 'light' || saved === 'dark') ? saved : 'auto');
     })();
   </script>
 </head>
@@ -41,13 +42,16 @@
         <h1>Docker Image Checker King</h1>
         <p>Compare local image digests against registry — no pulls required <span id="appVersion" class="app-version"></span></p>
       </div>
-      <button class="settings-btn" onclick="openSettingsModal()" title="Notification settings">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
-      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Switch theme">
-        <span class="icon-sun">☀️</span>
-        <span class="icon-moon">🌙</span>
-      </button>
+      <div class="header-buttons">
+        <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Switch theme">
+          <span class="icon-sun">☀️</span>
+          <span class="icon-moon">🌙</span>
+          <span class="icon-auto"><span class="auto-sun">☀️</span><span class="auto-moon">🌙</span></span>
+        </button>
+        <button class="settings-btn" onclick="openSettingsModal()" title="Notification settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
     </div>
 
     <div class="rate-limits" id="rateLimits"></div>
@@ -114,6 +118,7 @@
         <div class="empty-icon"><img src="/favicon/android-chrome-192x192.png" alt="" class="empty-logo"></div>
         <p>Click <strong>Check Images</strong> to compare your containers against their registry digests.</p>
       </div>
+      <div class="app-footer">Victoare &mdash; 2026 &mdash; <a href="https://github.com/Victoare/DockerImageCheckerKing" target="_blank" rel="noopener">github.com/Victoare/DockerImageCheckerKing</a></div>
     </div>
 
     <div class="log-panel" id="logPanel">
@@ -135,6 +140,7 @@
           <div id="cnotifyModalContent"></div>
         </div>
         <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" id="cnotifyResetBtn" onclick="cnotifyResetToDefault()" style="margin-right:auto;">Set to default</button>
           <button class="modal-btn modal-btn-cancel" onclick="closeCnotifyModal()">Close</button>
         </div>
       </div>
@@ -192,11 +198,21 @@
       document.documentElement.setAttribute('data-theme', theme);
     }
 
+    function setThemeMode(mode) {
+      document.documentElement.setAttribute('data-theme-mode', mode);
+      if (mode === 'auto') {
+        localStorage.removeItem(THEME_KEY);
+        applyTheme(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      } else {
+        localStorage.setItem(THEME_KEY, mode);
+        applyTheme(mode);
+      }
+    }
+
     function toggleTheme() {
-      var current = document.documentElement.getAttribute('data-theme');
-      var next = current === 'dark' ? 'light' : 'dark';
-      applyTheme(next);
-      localStorage.setItem(THEME_KEY, next);
+      var mode = document.documentElement.getAttribute('data-theme-mode') || 'auto';
+      var next = mode === 'auto' ? 'dark' : mode === 'dark' ? 'light' : 'auto';
+      setThemeMode(next);
     }
 
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
@@ -284,6 +300,8 @@
         restoreUpdateLogs();
         // Reconnect to any active updates
         reconnectActiveUpdates();
+        // Refresh bell icon states after table rebuild
+        loadAllCnotifyStates();
 
         // Collapse log if everything is OK (no outdated, no unknown)
         var unknown = APP.results.filter(function (r) { return r.result === 'Unknown'; }).length;
@@ -399,6 +417,17 @@
         '</button></td>';
       tbody.appendChild(tr);
 
+      // Apply notify state from server
+      if (row.notifyState === 'disabled') {
+        var ni = document.getElementById('cnotify-icon-' + idx);
+        var nb = document.getElementById('cnotify-btn-' + idx);
+        if (ni) ni.classList.add('cnotify-disabled');
+        if (nb) nb.classList.add('cnotify-state-disabled');
+      } else if (row.notifyState === 'customized') {
+        var ni2 = document.getElementById('cnotify-icon-' + idx);
+        if (ni2) ni2.classList.add('cnotify-customized');
+      }
+
       // Detail row
       var dr = document.createElement('tr');
       dr.className = 'detail-row';
@@ -493,7 +522,6 @@
           // Restore persisted update logs + reconnect to any active updates
           restoreUpdateLogs();
           reconnectActiveUpdates();
-          loadAllCnotifyStates();
         })
         .catch(function () { });
     }
@@ -569,7 +597,6 @@
           updateLastCheckedLabel(cache.timestamp);
           restoreUpdateLogs();
           reconnectActiveUpdates();
-          loadAllCnotifyStates();
         })
         .catch(function () { });
     }
@@ -591,8 +618,8 @@
             var info = limits[registry];
             if (info.limit === null && info.remaining === null) continue;
             var pct = (info.limit && info.remaining !== null) ? Math.round((info.remaining / info.limit) * 100) : 100;
-            // Hide if remaining equals limit (no usage / no real info)
-            if (info.remaining !== null && info.limit !== null && info.remaining >= info.limit) continue;
+            // Only show when rate limit is below 80% (matches server's fast/slow threshold)
+            if (pct >= 80) continue;
             var color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--yellow)' : 'var(--red)';
             var item = document.createElement('div');
             item.className = 'rate-limit-item';
@@ -1042,12 +1069,14 @@
         fetch('/api/container-notify/' + encodeURIComponent(container)).then(function (r) { return r.json(); })
       ]).then(function (results) {
         var tgConfig = results[0];
+        var hasOverride = !!results[1];
         var co = results[1] || { enabled: true, chats: {} };
         if (!co.chats) co.chats = {};
         cnotifyCache[container] = co;
         cnotifyChatsCache[container] = tgConfig.chats || [];
         renderContainerNotify(container, cnotifyChatsCache[container], co);
         updateCnotifyBtnState(idx, container);
+        document.getElementById('cnotifyResetBtn').style.display = hasOverride ? '' : 'none';
       });
     }
 
@@ -1134,12 +1163,16 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(co)
       });
+      var resetBtn = document.getElementById('cnotifyResetBtn');
+      if (resetBtn) resetBtn.style.display = '';
     }
 
     function cnotifySetEnabled(val) {
       var container = cnotifyCurrentContainer;
       var idx = cnotifyCurrentIdx;
       cnotifyCache[container].enabled = val;
+      var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+      if (row) row.notifyState = val ? 'customized' : 'disabled';
       var chatsEl = document.getElementById('cnotify-chats-modal');
       if (chatsEl) chatsEl.style.display = val ? '' : 'none';
       updateCnotifyBtnState(idx, container);
@@ -1166,26 +1199,22 @@
       cnotifySave();
     }
 
-    // Load all container notify states on init for bell icons
-    function loadAllCnotifyStates() {
-      Promise.all([
-        fetch('/api/telegram/config').then(function (r) { return r.json(); }),
-        fetch('/api/container-notify').then(function (r) { return r.json(); })
-      ]).then(function (results) {
-        var globalChats = (results[0] && results[0].chats) || [];
-        var allOverrides = results[1] || {};
-        for (var container in allOverrides) {
-          if (!allOverrides.hasOwnProperty(container)) continue;
-          var co = allOverrides[container];
-          if (!co.chats) co.chats = {};
-          cnotifyCache[container] = co;
-          cnotifyChatsCache[container] = globalChats;
-          // Find idx for this container
-          var idx = getIdxByContainer(container);
+    function cnotifyResetToDefault() {
+      var container = cnotifyCurrentContainer;
+      var idx = cnotifyCurrentIdx;
+      if (!container) return;
+      fetch('/api/container-notify/' + encodeURIComponent(container), { method: 'DELETE' })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          delete cnotifyCache[container];
+          // Update the stored row's notifyState
+          var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+          if (row) row.notifyState = 'default';
           if (idx !== null) updateCnotifyBtnState(idx, container);
-        }
-      }).catch(function () {});
+          closeCnotifyModal();
+        });
     }
+
 
     function saveTelegramSettings() {
       // Filter out empty chat IDs

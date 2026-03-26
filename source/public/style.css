@@ -176,8 +176,8 @@
 
   /* Theme toggle */
   .theme-toggle {
-    width: 42px;
-    height: 42px;
+    width: 40px;
+    height: 40px;
     border-radius: 10px;
     border: 1px solid var(--border);
     background: var(--surface);
@@ -199,16 +199,46 @@
   }
 
   .theme-toggle .icon-sun,
-  .theme-toggle .icon-moon {
+  .theme-toggle .icon-moon,
+  .theme-toggle .icon-auto {
     display: none;
   }
 
-  [data-theme="dark"] .theme-toggle .icon-sun {
+  [data-theme-mode="auto"] .theme-toggle .icon-auto {
     display: block;
   }
 
-  [data-theme="light"] .theme-toggle .icon-moon {
+  [data-theme-mode="dark"] .theme-toggle .icon-sun {
     display: block;
+  }
+
+  [data-theme-mode="light"] .theme-toggle .icon-moon {
+    display: block;
+  }
+
+  [data-theme-mode="auto"] .theme-toggle {
+    background: linear-gradient(135deg, #ffffff 50%, #14171e 50%);
+    border-color: var(--border-bright);
+  }
+
+  .icon-auto {
+    position: relative;
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .icon-auto .auto-sun {
+    position: absolute;
+    top: -1px;
+    left: -4px;
+  }
+
+  .icon-auto .auto-moon {
+    position: absolute;
+    bottom: 0px;
+    right: -3px;
   }
 
   .btn-check {
@@ -980,6 +1010,22 @@
     line-height: 1.6;
   }
 
+  .app-footer {
+    text-align: center;
+    padding: 24px 0 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .app-footer a {
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+
+  .app-footer a:hover {
+    color: var(--accent);
+  }
+
   @keyframes rowSlideIn {
     from {
       opacity: 0;
@@ -1624,7 +1670,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--text-dim);
 }
 
 /* ===== Container notification modal content ===== */
@@ -1734,7 +1780,8 @@
 }
 
 @media (max-width: 639px) {
-  .settings-btn {
+  .settings-btn,
+  .theme-toggle {
     width: 34px;
     height: 34px;
     border-radius: 8px;
@@ -1743,6 +1790,32 @@
   .settings-btn svg {
     width: 16px;
     height: 16px;
+  }
+
+  .theme-toggle {
+    font-size: 15px;
+  }
+
+  .icon-auto .auto-sun {
+    top: 0px;
+    left: -3px;
+  }  
+
+  .icon-auto .auto-moon {
+    top: 1px;
+    left: -1px;
+  }
+}
+
+  .header-buttons {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+@media (max-width: 479px) {
+  .header-buttons {
+    flex-direction: column;
   }
 }
 

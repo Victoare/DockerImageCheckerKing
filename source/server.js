@@ -7,6 +7,26 @@ const crypto = require('crypto');
 const { URL } = require('url');
 
 // ---------------------------------------------------------------------------
+// TTL file cache — keeps parsed JSON in memory for `ttl` ms after last access
+// ---------------------------------------------------------------------------
+function createFileCache(filePath, fallback, ttl = 300000) {
+  let data = null, timer = null;
+  function touch() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { data = null; timer = null; }, ttl);
+  }
+  return {
+    load() {
+      if (data !== null) { touch(); return data; }
+      try { data = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { data = fallback(); }
+      touch();
+      return data;
+    },
+    invalidate() { data = null; if (timer) { clearTimeout(timer); timer = null; } }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const HTTPS_TIMEOUT = 15000;
@@ -377,7 +397,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
     if (onProgress) onProgress({ index: i, total: containerList.length, container: name, image });
     const parsed = parseImageReference(image);
     if (!parsed) {
-      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-' };
+      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', notifyState: getNotifyState(name) };
       results.push(row); if (onResult) onResult(row); continue;
     }
     let localDigest = null;
@@ -413,11 +433,11 @@ async function runCheck(includeStopped, onProgress, onResult) {
     else if (localDigest === null) result = 'NoLocalDigest';
     else if (localDigest === remoteDigest) result = 'UpToDate';
     else result = 'Outdated';
-    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache };
+    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, notifyState: getNotifyState(name) };
     results.push(row); if (onResult) onResult(row);
   }
   const timestamp = new Date().toISOString();
-  try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp, results })); } catch (e) { console.warn('[check] Failed to save cache:', e.message); }
+  try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp, results }, null, 2)); } catch (e) { console.warn('[check] Failed to save cache:', e.message); }
   return { timestamp, results };
 }
 
@@ -445,12 +465,11 @@ app.get('/api/check', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Telegram notification helpers
 // ---------------------------------------------------------------------------
-function loadTelegramConfig() {
-  try { return JSON.parse(fs.readFileSync(TELEGRAM_CONFIG_FILE, 'utf8')); } catch { return { chats: [] }; }
-}
-
+const telegramConfigCache = createFileCache(TELEGRAM_CONFIG_FILE, () => ({ chats: [] }));
+function loadTelegramConfig() { return telegramConfigCache.load(); }
 function saveTelegramConfig(config) {
   try { fs.writeFileSync(TELEGRAM_CONFIG_FILE, JSON.stringify(config, null, 2)); } catch (e) { console.warn('[telegram] Failed to save config:', e.message); }
+  telegramConfigCache.invalidate();
 }
 
 function loadTelegramSent() {
@@ -555,12 +574,21 @@ async function sendTelegramNotifications(results) {
 
 // Container-level notification overrides
 // { "container-name": { enabled: false, chats: { "chatId": { enabled: true, mode: "once" } } } }
-function loadContainerNotify() {
-  try { return JSON.parse(fs.readFileSync(CONTAINER_NOTIFY_FILE, 'utf8')); } catch { return {}; }
+const containerNotifyCache = createFileCache(CONTAINER_NOTIFY_FILE, () => ({}));
+function loadContainerNotify() { return containerNotifyCache.load(); }
+
+// Compute bell icon state for a container: "default" | "disabled" | "customized"
+function getNotifyState(containerName) {
+  const allOverrides = loadContainerNotify();
+  const co = allOverrides[containerName];
+  if (!co) return 'default';
+  if (co.enabled === false) return 'disabled';
+  return 'customized';
 }
 
 function saveContainerNotify(data) {
   try { fs.writeFileSync(CONTAINER_NOTIFY_FILE, JSON.stringify(data, null, 2)); } catch (e) { console.warn('[notify] Failed to save:', e.message); }
+  containerNotifyCache.invalidate();
 }
 
 // Telegram API endpoints
@@ -637,6 +665,13 @@ app.post('/api/container-notify/:container', (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete('/api/container-notify/:container', (req, res) => {
+  const all = loadContainerNotify();
+  delete all[req.params.container];
+  saveContainerNotify(all);
+  res.json({ ok: true });
+});
+
 // ---------------------------------------------------------------------------
 // Auto-check scheduler
 // ---------------------------------------------------------------------------
@@ -705,7 +740,13 @@ app.get('/api/rate-limits', (_req, res) => {
 });
 
 app.get('/api/last-result', (_req, res) => {
-  try { res.json(JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))); } catch { res.json(null); }
+  try {
+    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (cache && cache.results) {
+      for (const row of cache.results) row.notifyState = getNotifyState(row.container);
+    }
+    res.json(cache);
+  } catch { res.json(null); }
 });
 
 app.get('/api/version', (_req, res) => res.json({ version: process.env.BUILD_VERSION || 'dev' }));
@@ -868,7 +909,35 @@ function finishUpdate(containerName, status) {
   state.status = status;
   saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt: new Date().toISOString(), status, log: state.log });
   broadcastStatus(containerName, status);
+  if (status === 'done') refreshCacheAfterUpdate(containerName, state.image);
   setTimeout(() => delete activeUpdates[containerName], 30000);
+}
+
+async function refreshCacheAfterUpdate(containerName, image) {
+  try {
+    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (!cache || !cache.results) return;
+    const row = cache.results.find(r => r.container === containerName);
+    if (!row) return;
+    // Re-inspect the new container to get fresh local digest
+    let localDigest = null;
+    try {
+      const inspect = await dockerApi('GET', `/images/${encodeURIComponent(image)}/json`);
+      if (inspect.RepoDigests && inspect.RepoDigests.length > 0) {
+        for (const d of inspect.RepoDigests) {
+          const m = d.match(/@(sha256:[a-f0-9]+)/);
+          if (m) { localDigest = m[1]; break; }
+        }
+      }
+    } catch {}
+    if (localDigest) {
+      row.localDigest = localDigest;
+      row.remoteDigest = localDigest;
+    }
+    row.result = 'UpToDate';
+    cache.timestamp = new Date().toISOString();
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+  } catch (e) { console.warn('[cache] Failed to refresh after update:', e.message); }
 }
 
 app.use(express.static(path.join(__dirname, 'public')));
