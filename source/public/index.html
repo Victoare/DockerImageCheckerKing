@@ -41,6 +41,9 @@
         <h1>Docker Image Checker King</h1>
         <p>Compare local image digests against registry — no pulls required <span id="appVersion" class="app-version"></span></p>
       </div>
+      <button class="settings-btn" onclick="openSettingsModal()" title="Notification settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
       <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Switch theme">
         <span class="icon-sun">☀️</span>
         <span class="icon-moon">🌙</span>
@@ -101,8 +104,7 @@
               <th class="col-registry">Registry</th>
               <th class="col-image">Image</th>
               <th class="col-tag">Tag</th>
-              <th class="col-status">Status</th>
-              <th class="col-actions"></th>
+              <th class="col-status" colspan="3">Status</th>
             </tr>
           </thead>
           <tbody id="resultsBody"></tbody>
@@ -120,6 +122,45 @@
         <span id="logToggleIcon" style="font-size:14px;transition:transform 0.2s;">▼</span>
       </div>
       <div class="log-content" id="logContent"></div>
+    </div>
+
+    <!-- Container Notification Modal -->
+    <div class="modal-overlay" id="cnotifyModal">
+      <div class="modal-card" style="max-width:460px;">
+        <div class="modal-header">
+          <span style="font-size:24px;">🔔</span>
+          <h3 id="cnotifyModalTitle">Notifications</h3>
+        </div>
+        <div class="modal-body" style="padding-bottom:12px;">
+          <div id="cnotifyModalContent"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" onclick="closeCnotifyModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+      <div class="modal-card" style="max-width:520px;">
+        <div class="modal-header">
+          <span style="font-size:24px;">🔔</span>
+          <h3>Telegram Notifications</h3>
+        </div>
+        <div class="modal-body" style="padding-bottom:12px;">
+          <p id="telegramBotHint" class="tg-bot-hint" style="display:none;">Set the <code>TELEGRAM_BOT_TOKEN</code> environment variable to enable notifications. Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> on Telegram.</p>
+          <p id="telegramDesc" style="margin-bottom:14px;font-size:13px;">Get notified on Telegram when outdated containers are found. Add the bot to your group or start a private chat, send it a message, then hit <strong>Discover chats</strong> to find available chat IDs automatically.</p>
+          <div id="telegramChatList"></div>
+          <div class="tg-add-row">
+            <button class="btn-add-chat" onclick="addTelegramChat()">+ Add Chat ID</button>
+            <button class="btn-add-chat btn-discover" id="telegramDiscoverBtn" style="display:none" onclick="discoverTelegramChats()">Discover chats</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" onclick="closeSettingsModal()">Cancel</button>
+          <button class="modal-btn modal-btn-confirm" style="background:var(--accent);border-color:var(--accent);" onclick="saveTelegramSettings()">Save</button>
+        </div>
+      </div>
     </div>
 
     <!-- Custom Confirm Modal -->
@@ -348,7 +389,14 @@
         '<td class="col-image"><span class="image-name">' + esc(row.image) + '</span></td>' +
         '<td class="col-tag"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></td>' +
         '<td class="col-status"><span class="result-badge result-' + row.result + '"><span class="dot"></span><span class="result-full">' + (resultLabels[row.result] || row.result) + '</span><span class="result-short">' + (resultShort[row.result] || '?') + '</span></span></td>' +
-        '<td class="col-actions">' + updateBtnMain + '</td>';
+        '<td class="col-actions">' + updateBtnMain + '</td>' +
+        '<td class="col-notify"><button class="cnotify-bell-btn" id="cnotify-btn-' + idx + '" onclick="openContainerNotifyModal(\'' + esc(row.container) + '\', ' + idx + ')" title="Notification settings">' +
+          '<span class="cnotify-icon" id="cnotify-icon-' + idx + '">' +
+            '<svg class="cnotify-bell" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' +
+            '<svg class="cnotify-bell-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M1 1l22 22"/></svg>' +
+            '<span class="cnotify-badge"></span>' +
+          '</span>' +
+        '</button></td>';
       tbody.appendChild(tr);
 
       // Detail row
@@ -371,13 +419,13 @@
       }
 
       dr.innerHTML =
-        '<td colspan="8" class="detail-cell">' +
+        '<td colspan="9" class="detail-cell">' +
         '<div class="detail-content">' +
         '<div class="detail-item detail-registry"><span class="detail-label">Registry</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--text-dim);">' + esc(row.registry) + '</span></div>' +
         '<div class="detail-item detail-image"><span class="detail-label">Image</span><span class="detail-value"><span class="image-name">' + esc(row.image) + '</span></span></div>' +
         '<div class="detail-item detail-tag"><span class="detail-label">Tag</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></div>' +
         '<div class="detail-item detail-state"><span class="detail-label">State</span><span class="detail-value"><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></span></div>' +
-        '<div class="detail-item detail-status"><span class="detail-label">Status</span><span class="detail-value"><span class="result-badge result-' + row.result + '"><span class="dot"></span>' + (resultLabels[row.result] || row.result) + '</span></span></div>' +
+        '<div class="detail-item detail-status"><span class="detail-label">Status</span><span class="detail-value"><span class="result-badge result-' + row.result + '" id="detail-badge-' + idx + '"><span class="dot"></span>' + (resultLabels[row.result] || row.result) + '</span></span></div>' +
         '<div class="detail-item"><span class="detail-label">Local Digest</span><span class="detail-value digest-val">' + esc(row.localDigest) + '</span></div>' +
         '<div class="detail-item"><span class="detail-label">Remote Digest</span><span class="detail-value digest-val">' + esc(row.remoteDigest) + '</span></div>' +
         '</div>' +
@@ -445,6 +493,7 @@
           // Restore persisted update logs + reconnect to any active updates
           restoreUpdateLogs();
           reconnectActiveUpdates();
+          loadAllCnotifyStates();
         })
         .catch(function () { });
     }
@@ -520,6 +569,7 @@
           updateLastCheckedLabel(cache.timestamp);
           restoreUpdateLogs();
           reconnectActiveUpdates();
+          loadAllCnotifyStates();
         })
         .catch(function () { });
     }
@@ -777,6 +827,15 @@
         var actions = tr.querySelector('.col-actions');
         if (actions) actions.innerHTML = '';
       }
+      // Update detail row badge too
+      var detailBadge = document.getElementById('detail-badge-' + idx);
+      if (detailBadge) {
+        detailBadge.className = 'result-badge result-UpToDate';
+        detailBadge.innerHTML = '<span class="dot"></span>Up to date';
+      }
+      // Remove outdated class from detail row
+      var detailRow = document.getElementById('detail-' + idx);
+      if (detailRow) detailRow.classList.remove('row-outdated');
       updateStats();
     }
 
@@ -788,6 +847,7 @@
       APP.modalCallback = callback;
       var modal = document.getElementById('confirmModal');
       modal.style.display = 'flex';
+      document.body.classList.add('modal-open');
       setTimeout(function () { modal.classList.add('visible'); }, 10);
     }
 
@@ -796,6 +856,7 @@
       modal.classList.remove('visible');
       setTimeout(function () {
         modal.style.display = 'none';
+        document.body.classList.remove('modal-open');
         if (confirmed && APP.modalCallback) APP.modalCallback();
         APP.modalCallback = null;
       }, 300);
@@ -803,11 +864,344 @@
 
     // Close modal on escape or backdrop click
     window.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeConfirmModal(false);
+      if (e.key === 'Escape') { closeConfirmModal(false); closeSettingsModal(); closeCnotifyModal(); }
     });
     document.getElementById('confirmModal').addEventListener('click', function (e) {
       if (e.target === this) closeConfirmModal(false);
     });
+    document.getElementById('settingsModal').addEventListener('click', function (e) {
+      if (e.target === this) closeSettingsModal();
+    });
+    document.getElementById('cnotifyModal').addEventListener('click', function (e) {
+      if (e.target === this) closeCnotifyModal();
+    });
+
+    // =========================================================================
+    // Telegram Settings
+    // =========================================================================
+    var telegramConfig = { chats: [] };
+
+    function openSettingsModal() {
+      fetch('/api/telegram/config')
+        .then(function (r) { return r.json(); })
+        .then(function (config) {
+          telegramConfig = config && config.chats ? config : { chats: [] };
+          telegramConfig._hasToken = config.hasToken;
+          var hasToken = config.hasToken;
+          document.getElementById('telegramBotHint').style.display = hasToken ? 'none' : '';
+          document.getElementById('telegramDiscoverBtn').style.display = hasToken ? '' : 'none';
+          document.getElementById('telegramDesc').textContent = hasToken
+            ? 'Get notified on Telegram when outdated containers are found. Add the bot to your group or start a private chat, send it a message, then hit Discover chats to find available chat IDs automatically.'
+            : 'Get notified on Telegram when outdated containers are found.';
+          renderTelegramChats();
+          var modal = document.getElementById('settingsModal');
+          modal.style.display = 'flex';
+          document.body.classList.add('modal-open');
+          setTimeout(function () { modal.classList.add('visible'); }, 10);
+        })
+        .catch(function () {
+          telegramConfig = { chats: [] };
+          renderTelegramChats();
+          var modal = document.getElementById('settingsModal');
+          modal.style.display = 'flex';
+          document.body.classList.add('modal-open');
+          setTimeout(function () { modal.classList.add('visible'); }, 10);
+        });
+    }
+
+    function closeSettingsModal() {
+      var modal = document.getElementById('settingsModal');
+      modal.classList.remove('visible');
+      setTimeout(function () {
+        modal.style.display = 'none';
+        document.body.classList.remove('modal-open');
+      }, 300);
+    }
+
+    function renderTelegramChats() {
+      var list = document.getElementById('telegramChatList');
+      list.innerHTML = '';
+      for (var i = 0; i < telegramConfig.chats.length; i++) {
+        var chat = telegramConfig.chats[i];
+        var div = document.createElement('div');
+        div.className = 'tg-chat-item';
+        div.id = 'tg-chat-' + i;
+        div.style.position = 'relative';
+        div.innerHTML =
+          '<div class="tg-chat-row">' +
+            '<label class="tg-toggle"><input type="checkbox" ' + (chat.enabled ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].enabled=this.checked"><span class="tg-toggle-slider"></span></label>' +
+            '<input type="text" class="tg-input tg-input-name" placeholder="Name" value="' + esc(chat.name || '') + '" onchange="telegramConfig.chats[' + i + '].name=this.value">' +
+            '<input type="text" class="tg-input" placeholder="Chat ID" value="' + esc(chat.chatId || '') + '" onchange="telegramConfig.chats[' + i + '].chatId=this.value">' +
+            '<button class="tg-btn-test" onclick="testTelegramChat(' + i + ')" title="Send test message">Test</button>' +
+            '<button class="tg-btn-remove" onclick="removeTelegramChat(' + i + ')" title="Remove">&times;</button>' +
+          '</div>' +
+          '<div class="tg-chat-mode">' +
+            '<label class="tg-radio"><input type="radio" name="tg-mode-' + i + '" value="once" ' + (chat.mode !== 'every' ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].mode=\'once\'"> Once per mismatch</label>' +
+            '<label class="tg-radio"><input type="radio" name="tg-mode-' + i + '" value="every" ' + (chat.mode === 'every' ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].mode=\'every\'"> Every new remote digest</label>' +
+          '</div>';
+        list.appendChild(div);
+      }
+    }
+
+    function addTelegramChat() {
+      telegramConfig.chats.push({ chatId: '', name: '', enabled: true, mode: 'once' });
+      renderTelegramChats();
+    }
+
+    function discoverTelegramChats() {
+      var btn = document.getElementById('telegramDiscoverBtn');
+      btn.disabled = true;
+      btn.textContent = 'Discovering...';
+      fetch('/api/telegram/discover')
+        .then(function (r) { return r.json(); })
+        .then(function (chats) {
+          btn.disabled = false;
+          btn.textContent = 'Discover chats';
+          if (chats.error) { alert(chats.error); return; }
+          if (!chats.length) { alert('No chats found. Send a message to the bot first, then try again.'); return; }
+          var existing = {};
+          for (var i = 0; i < telegramConfig.chats.length; i++) {
+            existing[telegramConfig.chats[i].chatId] = true;
+          }
+          var added = 0;
+          for (var j = 0; j < chats.length; j++) {
+            if (existing[chats[j].chatId]) continue;
+            telegramConfig.chats.push({
+              chatId: chats[j].chatId,
+              name: chats[j].name || '',
+              enabled: true,
+              mode: 'once'
+            });
+            added++;
+          }
+          renderTelegramChats();
+          if (added === 0) alert('All discovered chats are already added.');
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          btn.textContent = 'Discover chats';
+          alert('Error: ' + e.message);
+        });
+    }
+
+    function removeTelegramChat(idx) {
+      telegramConfig.chats.splice(idx, 1);
+      renderTelegramChats();
+    }
+
+    function showChatFlash(idx, success, msg) {
+      var item = document.getElementById('tg-chat-' + idx);
+      if (!item) return;
+      var flash = document.createElement('div');
+      flash.className = 'tg-flash ' + (success ? 'tg-flash-ok' : 'tg-flash-err');
+      flash.textContent = msg;
+      item.appendChild(flash);
+      requestAnimationFrame(function () { flash.classList.add('visible'); });
+      setTimeout(function () {
+        flash.classList.remove('visible');
+        setTimeout(function () { if (flash.parentNode) flash.parentNode.removeChild(flash); }, 300);
+      }, 2000);
+    }
+
+    function testTelegramChat(idx) {
+      var chat = telegramConfig.chats[idx];
+      if (!chat || !chat.chatId) { showChatFlash(idx, false, 'Enter a Chat ID first'); return; }
+      fetch('/api/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: chat.chatId })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) showChatFlash(idx, true, 'Sent!');
+          else showChatFlash(idx, false, d.description || d.error || 'Failed');
+        })
+        .catch(function (e) { showChatFlash(idx, false, e.message); });
+    }
+
+    // =========================================================================
+    // Per-container notification overrides (modal-based)
+    // =========================================================================
+    var cnotifyCache = {}; // container -> settings object
+    var cnotifyChatsCache = {}; // container -> global chats array
+    var cnotifyCurrentIdx = null;
+    var cnotifyCurrentContainer = null;
+
+    function openContainerNotifyModal(container, idx) {
+      cnotifyCurrentIdx = idx;
+      cnotifyCurrentContainer = container;
+      document.getElementById('cnotifyModalTitle').textContent = container;
+      document.getElementById('cnotifyModalContent').innerHTML = '<div class="cnotify-empty">Loading...</div>';
+      var modal = document.getElementById('cnotifyModal');
+      modal.style.display = 'flex';
+      document.body.classList.add('modal-open');
+      setTimeout(function () { modal.classList.add('visible'); }, 10);
+
+      Promise.all([
+        fetch('/api/telegram/config').then(function (r) { return r.json(); }),
+        fetch('/api/container-notify/' + encodeURIComponent(container)).then(function (r) { return r.json(); })
+      ]).then(function (results) {
+        var tgConfig = results[0];
+        var co = results[1] || { enabled: true, chats: {} };
+        if (!co.chats) co.chats = {};
+        cnotifyCache[container] = co;
+        cnotifyChatsCache[container] = tgConfig.chats || [];
+        renderContainerNotify(container, cnotifyChatsCache[container], co);
+        updateCnotifyBtnState(idx, container);
+      });
+    }
+
+    function closeCnotifyModal() {
+      var modal = document.getElementById('cnotifyModal');
+      modal.classList.remove('visible');
+      setTimeout(function () {
+        modal.style.display = 'none';
+        document.body.classList.remove('modal-open');
+      }, 300);
+      cnotifyCurrentIdx = null;
+      cnotifyCurrentContainer = null;
+    }
+
+    function renderContainerNotify(container, chats, co) {
+      var panel = document.getElementById('cnotifyModalContent');
+      if (!chats || chats.length === 0) {
+        panel.innerHTML = '<div class="cnotify-empty">No Telegram chats configured. Add them in the global settings.</div>';
+        return;
+      }
+      var masterChecked = co.enabled !== false;
+      var html =
+        '<div class="cnotify-row cnotify-master">' +
+          '<label class="tg-toggle"><input type="checkbox" ' + (masterChecked ? 'checked' : '') + ' onchange="cnotifySetEnabled(this.checked)"><span class="tg-toggle-slider"></span></label>' +
+          '<span class="cnotify-label">Enable notifications for this container</span>' +
+        '</div>' +
+        '<div class="cnotify-chats" id="cnotify-chats-modal" style="' + (masterChecked ? '' : 'display:none') + '">';
+
+      for (var i = 0; i < chats.length; i++) {
+        var chat = chats[i];
+        var chatOverride = co.chats[chat.chatId] || {};
+        var chatEnabled = chatOverride.enabled !== false;
+        var chatMode = chatOverride.mode || chat.mode || 'once';
+        var label = chat.name ? esc(chat.name) : esc(chat.chatId);
+
+        html +=
+          '<div class="cnotify-row cnotify-chat-row">' +
+            '<label class="tg-toggle"><input type="checkbox" ' + (chatEnabled ? 'checked' : '') + ' onchange="cnotifySetChatEnabled(\'' + esc(chat.chatId) + '\', this.checked)"><span class="tg-toggle-slider"></span></label>' +
+            '<span class="cnotify-label">' + label + '</span>' +
+            '<div class="cnotify-mode">' +
+              '<label class="tg-radio"><input type="radio" name="cnotify-mode-m-' + i + '" value="once" ' + (chatMode !== 'every' ? 'checked' : '') + ' onchange="cnotifySetChatMode(\'' + esc(chat.chatId) + '\', \'once\')"> Once</label>' +
+              '<label class="tg-radio"><input type="radio" name="cnotify-mode-m-' + i + '" value="every" ' + (chatMode === 'every' ? 'checked' : '') + ' onchange="cnotifySetChatMode(\'' + esc(chat.chatId) + '\', \'every\')"> Every</label>' +
+            '</div>' +
+          '</div>';
+      }
+      html += '</div>';
+      panel.innerHTML = html;
+    }
+
+    function updateCnotifyBtnState(idx, container) {
+      var icon = document.getElementById('cnotify-icon-' + idx);
+      var btn = document.getElementById('cnotify-btn-' + idx);
+      if (!icon) return;
+      var co = cnotifyCache[container];
+      icon.className = 'cnotify-icon';
+      if (btn) btn.classList.remove('cnotify-state-disabled');
+
+      if (!co) return;
+
+      if (co.enabled === false) {
+        icon.classList.add('cnotify-disabled');
+        if (btn) btn.classList.add('cnotify-state-disabled');
+        return;
+      }
+
+      var chats = cnotifyChatsCache[container] || [];
+      var customized = false;
+      for (var i = 0; i < chats.length; i++) {
+        var chatId = chats[i].chatId;
+        var ov = co.chats && co.chats[chatId];
+        if (!ov) continue;
+        if (ov.enabled === false) { customized = true; break; }
+        if (ov.mode && ov.mode !== (chats[i].mode || 'once')) { customized = true; break; }
+      }
+      if (customized) icon.classList.add('cnotify-customized');
+    }
+
+    function cnotifySave() {
+      var container = cnotifyCurrentContainer;
+      var co = cnotifyCache[container];
+      if (!co || !container) return;
+      fetch('/api/container-notify/' + encodeURIComponent(container), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(co)
+      });
+    }
+
+    function cnotifySetEnabled(val) {
+      var container = cnotifyCurrentContainer;
+      var idx = cnotifyCurrentIdx;
+      cnotifyCache[container].enabled = val;
+      var chatsEl = document.getElementById('cnotify-chats-modal');
+      if (chatsEl) chatsEl.style.display = val ? '' : 'none';
+      updateCnotifyBtnState(idx, container);
+      cnotifySave();
+    }
+
+    function cnotifySetChatEnabled(chatId, val) {
+      var container = cnotifyCurrentContainer;
+      var idx = cnotifyCurrentIdx;
+      var co = cnotifyCache[container];
+      if (!co.chats[chatId]) co.chats[chatId] = {};
+      co.chats[chatId].enabled = val;
+      updateCnotifyBtnState(idx, container);
+      cnotifySave();
+    }
+
+    function cnotifySetChatMode(chatId, mode) {
+      var container = cnotifyCurrentContainer;
+      var idx = cnotifyCurrentIdx;
+      var co = cnotifyCache[container];
+      if (!co.chats[chatId]) co.chats[chatId] = {};
+      co.chats[chatId].mode = mode;
+      updateCnotifyBtnState(idx, container);
+      cnotifySave();
+    }
+
+    // Load all container notify states on init for bell icons
+    function loadAllCnotifyStates() {
+      Promise.all([
+        fetch('/api/telegram/config').then(function (r) { return r.json(); }),
+        fetch('/api/container-notify').then(function (r) { return r.json(); })
+      ]).then(function (results) {
+        var globalChats = (results[0] && results[0].chats) || [];
+        var allOverrides = results[1] || {};
+        for (var container in allOverrides) {
+          if (!allOverrides.hasOwnProperty(container)) continue;
+          var co = allOverrides[container];
+          if (!co.chats) co.chats = {};
+          cnotifyCache[container] = co;
+          cnotifyChatsCache[container] = globalChats;
+          // Find idx for this container
+          var idx = getIdxByContainer(container);
+          if (idx !== null) updateCnotifyBtnState(idx, container);
+        }
+      }).catch(function () {});
+    }
+
+    function saveTelegramSettings() {
+      // Filter out empty chat IDs
+      telegramConfig.chats = telegramConfig.chats.filter(function (c) { return c.chatId && c.chatId.trim(); });
+      fetch('/api/telegram/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(telegramConfig)
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) closeSettingsModal();
+          else alert('Failed to save: ' + JSON.stringify(d));
+        })
+        .catch(function (e) { alert('Error: ' + e.message); });
+    }
   </script>
 </body>
 

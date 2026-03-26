@@ -26,6 +26,11 @@ const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock';
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const CACHE_FILE = path.join(DATA_DIR, 'last-result.json');
 const UPDATE_LOGS_FILE = path.join(DATA_DIR, 'update-logs.json');
+const TELEGRAM_CONFIG_FILE = path.join(DATA_DIR, 'telegram.json');
+const TELEGRAM_SENT_FILE = path.join(DATA_DIR, 'telegram-sent.json');
+
+const CONTAINER_NOTIFY_FILE = path.join(DATA_DIR, 'container-notify.json');
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
 // Ensure data directory exists
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { console.warn('[init] Could not create data dir:', e.message); }
@@ -432,8 +437,204 @@ app.get('/api/check', async (req, res) => {
     );
     scheduleNextAutoCheck();
     send('done', { total: result.results.length });
+    sendTelegramNotifications(result.results).catch(e => console.warn('[telegram] Notification error:', e.message));
   } catch (err) { send('error', { message: err.message }); }
   res.end();
+});
+
+// ---------------------------------------------------------------------------
+// Telegram notification helpers
+// ---------------------------------------------------------------------------
+function loadTelegramConfig() {
+  try { return JSON.parse(fs.readFileSync(TELEGRAM_CONFIG_FILE, 'utf8')); } catch { return { chats: [] }; }
+}
+
+function saveTelegramConfig(config) {
+  try { fs.writeFileSync(TELEGRAM_CONFIG_FILE, JSON.stringify(config, null, 2)); } catch (e) { console.warn('[telegram] Failed to save config:', e.message); }
+}
+
+function loadTelegramSent() {
+  try { return JSON.parse(fs.readFileSync(TELEGRAM_SENT_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveTelegramSent(sent) {
+  try { fs.writeFileSync(TELEGRAM_SENT_FILE, JSON.stringify(sent, null, 2)); } catch (e) { console.warn('[telegram] Failed to save sent state:', e.message); }
+}
+
+async function sendTelegramMessage(chatId, text) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const body = JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' });
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = https.request({
+      hostname: parsed.hostname,
+      port: 443,
+      path: parsed.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch { resolve({ ok: false, description: data }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Telegram request timeout')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+async function sendTelegramNotifications(results) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  const config = loadTelegramConfig();
+  if (!config.chats || config.chats.length === 0) return;
+
+  const outdated = results.filter(r => r.result === 'Outdated');
+  if (outdated.length === 0) return;
+
+  const sent = loadTelegramSent();
+  const cnotify = loadContainerNotify();
+  let changed = false;
+
+  for (const chat of config.chats) {
+    if (!chat.enabled) continue;
+    const chatId = chat.chatId;
+
+    for (const row of outdated) {
+      // Per-container override check
+      const co = cnotify[row.container];
+      if (co) {
+        if (co.enabled === false) continue; // all notifications disabled for this container
+        if (co.chats && co.chats[chatId]) {
+          if (co.chats[chatId].enabled === false) continue; // this chat disabled for this container
+        }
+      }
+
+      // Determine effective mode: per-container chat override > global chat default
+      let effectiveMode = chat.mode || 'once';
+      if (co && co.chats && co.chats[chatId] && co.chats[chatId].mode) {
+        effectiveMode = co.chats[chatId].mode;
+      }
+
+      const key = `${chatId}:${row.container}`;
+      const digestKey = `${row.localDigest}|${row.remoteDigest}`;
+
+      if (effectiveMode === 'once') {
+        if (sent[key] && sent[key].digestKey === digestKey) continue;
+      } else {
+        if (sent[key] && sent[key].remoteDigest === row.remoteDigest) continue;
+      }
+
+      const text =
+        `<b>Update available!</b>\n\n` +
+        `Container: <code>${row.container}</code>\n` +
+        `Image: <code>${row.image}</code>\n` +
+        `Registry: ${row.registry}\n` +
+        `Tag: ${row.tag}`;
+
+      try {
+        const result = await sendTelegramMessage(chatId, text);
+        if (result.ok) {
+          console.log(`[telegram] Sent notification to ${chatId} for ${row.container}`);
+        } else {
+          console.warn(`[telegram] Failed to send to ${chatId}:`, result.description);
+        }
+      } catch (e) {
+        console.warn(`[telegram] Error sending to ${chatId}:`, e.message);
+      }
+
+      sent[key] = { digestKey, remoteDigest: row.remoteDigest, sentAt: new Date().toISOString() };
+      changed = true;
+    }
+  }
+
+  if (changed) saveTelegramSent(sent);
+}
+
+// Container-level notification overrides
+// { "container-name": { enabled: false, chats: { "chatId": { enabled: true, mode: "once" } } } }
+function loadContainerNotify() {
+  try { return JSON.parse(fs.readFileSync(CONTAINER_NOTIFY_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveContainerNotify(data) {
+  try { fs.writeFileSync(CONTAINER_NOTIFY_FILE, JSON.stringify(data, null, 2)); } catch (e) { console.warn('[notify] Failed to save:', e.message); }
+}
+
+// Telegram API endpoints
+app.get('/api/telegram/config', (_req, res) => {
+  const config = loadTelegramConfig();
+  config.hasToken = !!TELEGRAM_BOT_TOKEN;
+  res.json(config);
+});
+
+app.post('/api/telegram/config', (req, res) => {
+  const config = req.body;
+  if (!config || !Array.isArray(config.chats)) return res.status(400).json({ error: 'Invalid config' });
+  saveTelegramConfig(config);
+  res.json({ ok: true });
+});
+
+app.post('/api/telegram/test', async (req, res) => {
+  const { chatId } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!TELEGRAM_BOT_TOKEN) return res.status(500).json({ error: 'TELEGRAM_BOT_TOKEN not configured' });
+  try {
+    const result = await sendTelegramMessage(chatId,
+      '<b>Update available!</b>\n\n' +
+      'Container: <code>my-awesome-app</code>\n' +
+      'Image: <code>nginx:latest</code>\n' +
+      'Registry: docker.io\n' +
+      'Tag: latest\n\n' +
+      '<i>This is a test notification.</i>');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/telegram/discover', async (_req, res) => {
+  if (!TELEGRAM_BOT_TOKEN) return res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not configured' });
+  try {
+    const updatesRes = await httpsGet(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?limit=100`);
+    if (updatesRes.statusCode !== 200) return res.status(500).json({ error: 'Telegram API error' });
+    const data = JSON.parse(updatesRes.body);
+    if (!data.ok) return res.status(500).json({ error: data.description || 'Unknown error' });
+
+    const seen = {};
+    for (const update of (data.result || [])) {
+      const msg = update.message || update.my_chat_member && update.my_chat_member.chat;
+      const chat = msg && (msg.chat || msg);
+      if (!chat || !chat.id) continue;
+      if (seen[chat.id]) continue;
+      seen[chat.id] = {
+        chatId: String(chat.id),
+        name: chat.title || chat.first_name || chat.username || '',
+        type: chat.type || 'unknown'
+      };
+    }
+    res.json(Object.values(seen));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/container-notify', (_req, res) => {
+  res.json(loadContainerNotify());
+});
+
+app.get('/api/container-notify/:container', (req, res) => {
+  const all = loadContainerNotify();
+  res.json(all[req.params.container] || null);
+});
+
+app.post('/api/container-notify/:container', (req, res) => {
+  const all = loadContainerNotify();
+  all[req.params.container] = req.body;
+  saveContainerNotify(all);
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -485,8 +686,9 @@ function scheduleNextAutoCheck() {
   autoCheckTimer = setTimeout(async () => {
     console.log('Running auto-check…');
     try {
-      await runCheck(true, null, null);
+      const autoResult = await runCheck(true, null, null);
       console.log('Auto-check complete.');
+      sendTelegramNotifications(autoResult.results).catch(e => console.warn('[telegram] Notification error:', e.message));
     } catch (e) {
       console.error('Auto-check failed:', e.message);
     }

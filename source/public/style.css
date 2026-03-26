@@ -85,6 +85,10 @@
     transition: background 0.3s ease, color 0.3s ease;
   }
 
+  body.modal-open {
+    overflow: hidden;
+  }
+
   body::before {
     content: '';
     position: fixed;
@@ -840,6 +844,11 @@
     .detail-image {
       display: flex;
     }
+
+    .col-actions {
+      width: 90px;
+      padding-right: 10px !important;
+    }
   }
 
   /* col-registry hidden below 800px */
@@ -850,6 +859,11 @@
 
     .detail-registry {
       display: flex;
+    }
+
+    .col-actions {
+      width: 80px;
+      padding-right: 8px !important;
     }
   }
 
@@ -893,6 +907,19 @@
       display: flex;
     }
 
+    .col-actions {
+      width: auto;
+      padding: 8px 6px !important;
+    }
+
+    .btn-update-inline .update-text {
+      display: none;
+    }
+
+    .btn-update-inline {
+      padding: 4px 8px;
+      font-size: 12px;
+    }
   }
 
   /* Narrowest mobile: status stays visible as emoji */
@@ -1239,22 +1266,6 @@
     display: none;
   }
 
-  /* Narrowest mobile: update button arrow only */
-  @media (max-width: 479px) {
-    .col-actions {
-      width: auto;
-      padding: 8px 6px !important;
-    }
-
-    .btn-update-inline .update-text {
-      display: none;
-    }
-
-    .btn-update-inline {
-      padding: 4px 8px;
-      font-size: 12px;
-    }
-  }
 /* ===== Custom Modal Dialog ===== */
 .modal-overlay {
   position: fixed;
@@ -1362,12 +1373,386 @@
   box-shadow: 0 4px 12px rgba(234, 179, 8, 0.25);
 }
 
+/* ===== Settings button ===== */
+.settings-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.settings-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+/* ===== Telegram Settings ===== */
+.tg-chat-item {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tg-chat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tg-input {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.tg-input:focus {
+  border-color: var(--accent);
+}
+
+.tg-btn-test {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 7px 12px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tg-btn-test:hover {
+  background: var(--accent-glow-strong);
+  border-color: var(--accent);
+}
+
+.tg-btn-remove {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.tg-btn-remove:hover {
+  border-color: var(--red);
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.tg-chat-mode {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  padding-left: 44px;
+}
+
+.tg-radio {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.tg-radio input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Toggle switch */
+.tg-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.tg-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.tg-toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border);
+  border-radius: 20px;
+  transition: background 0.2s;
+}
+
+.tg-toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--text-dim);
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.tg-toggle input:checked + .tg-toggle-slider {
+  background: var(--accent);
+}
+
+.tg-toggle input:checked + .tg-toggle-slider::before {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.tg-flash {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tg-flash.visible {
+  opacity: 1;
+}
+
+.tg-flash-ok {
+  background: rgba(34, 197, 94, 0.85);
+  color: #fff;
+}
+
+.tg-flash-err {
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+}
+
+.tg-input-name {
+  max-width: 100px;
+  flex: 0 0 auto;
+}
+
+/* ===== Notification bell column ===== */
+.col-notify {
+  width: 36px;
+  padding: 8px 6px !important;
+  text-align: center;
+}
+
+.cnotify-bell-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  padding: 0;
+}
+
+.cnotify-bell-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.cnotify-bell-btn.cnotify-state-disabled {
+  opacity: 0.4;
+}
+
+.cnotify-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.cnotify-icon .cnotify-bell { display: inline; }
+.cnotify-icon .cnotify-bell-off { display: none; }
+.cnotify-icon .cnotify-badge { display: none; }
+
+.cnotify-icon.cnotify-disabled .cnotify-bell { display: none; }
+.cnotify-icon.cnotify-disabled .cnotify-bell-off { display: inline; }
+
+.cnotify-icon.cnotify-customized .cnotify-badge {
+  display: block;
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ===== Container notification modal content ===== */
+.cnotify-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.cnotify-master {
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cnotify-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cnotify-mode {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.cnotify-empty {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+
+@media (max-width: 639px) {
+  .cnotify-chat-row {
+    flex-wrap: wrap;
+  }
+
+  .cnotify-mode {
+    width: 100%;
+    padding-left: 46px;
+  }
+}
+
+.tg-bot-hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.tg-bot-hint a {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tg-bot-hint a:hover {
+  text-decoration: underline;
+}
+
+.tg-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-add-chat {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  width: 100%;
+  transition: all 0.2s;
+}
+
+.btn-add-chat:hover {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.btn-discover {
+  border-style: solid;
+  background: var(--accent-glow);
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+.btn-discover:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 639px) {
+  .settings-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+  }
+
+  .settings-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
 @media (max-width: 480px) {
   .modal-card {
     border-radius: 20px 20px 0 0;
     position: fixed;
     bottom: 0;
     transform: translateY(100%);
+    max-width: 100% !important;
   }
 
   .modal-overlay {
@@ -1387,6 +1772,41 @@
     width: 100%;
     padding: 14px;
     font-size: 14px;
+  }
+
+  .tg-chat-mode {
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 0;
+    margin-top: 10px;
+  }
+
+  .tg-chat-row {
+    flex-wrap: wrap;
+  }
+
+  .tg-input {
+    order: -1;
+    flex-basis: 100%;
+    margin-bottom: 6px;
+  }
+
+  .tg-input-name {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .tg-toggle {
+    order: 0;
+  }
+
+  .tg-btn-test {
+    flex: 1;
+  }
+
+  .modal-body {
+    max-height: 60vh;
+    overflow-y: auto;
   }
 }
 
