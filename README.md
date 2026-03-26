@@ -1,12 +1,13 @@
 # Docker Image Checker King 🐳
 
-Web-based tool that checks your Docker containers for outdated images by comparing local digests against remote registry digests (therefore no unneccessry image pulls). Supports one-click container updates via a "Clone & Swap" pattern.
+Web-based tool that checks your Docker containers for outdated images by comparing local digests against remote registry digests (therefore no unneccessry image pulls). Update notifications using Telegram. Supports one-click container updates via a "Clone & Swap" pattern.
 
 Responsive design, light/dark themes
 
-![alt text](other/Screenshot_desktop.png)
-
-![alt text](other/Screenshot_mobile.png)
+<p align="center">
+  <img src="other/Screenshot_desktop.png" width="70%" />
+  <img src="other/Screenshot_mobile.png" width="20%" />
+</p>
 
 ## Quick Start
 
@@ -24,6 +25,7 @@ services:
     environment:
       - AUTO_CHECK_FAST_MINUTES=60
       - AUTO_CHECK_MINUTES=360
+      - TELEGRAM_BOT_TOKEN=123456:ABC-DEF... 
     restart: unless-stopped
 ```
 
@@ -53,7 +55,40 @@ docker build -t docker-image-checker-king ./source
 - **Auto-check scheduler** — adapts interval based on Docker Hub rate limits
 - **Clickable stat cards** — filter by Up to date / Outdated / Unknown / Total
 - **Responsive table** — columns collapse progressively on smaller screens
+- **Telegram notifications** — get alerted when outdated containers are found, with per-container overrides
 - **Dark/Light theme** — toggle persisted in localStorage
+
+## Telegram Notifications
+
+Get notified on Telegram when outdated containers are detected.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and copy the bot token
+2. Pass the token as an environment variable:
+   ```yaml
+   environment:
+     - TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   ```
+3. Add the bot to a group chat or start a private conversation with it and send it a message
+4. Open the **Settings** (gear icon) in the web UI → click **Discover chats** to auto-detect available chat IDs
+5. Enable the chats you want to receive notifications on
+
+### Notification modes
+
+Each chat can be set to one of two modes:
+
+| Mode | Behavior |
+|------|----------|
+| **Once** (default) | Sends one notification per outdated container; re-notifies when either the local or remote digest changes (e.g. after you update the container or a new version is pushed) |
+| **Every new version** | Sends a notification each time a new remote image version is detected for an outdated container |
+
+### Per-container overrides
+
+Click the bell icon (🔔) on any container row to:
+- Disable notifications entirely for that container
+- Override the notification mode per chat
+- Fine-tune which chats receive alerts for specific containers
 
 ## Authentication
 
@@ -70,11 +105,9 @@ docker build -t docker-image-checker-king ./source
 
 | Env Variable | Default | Description |
 |---|---|---|
-| `PORT` | `8080` | HTTP port |
-| `DOCKER_SOCKET` | `/var/run/docker.sock` | Path to Docker socket |
-| `DATA_DIR` | `/data` | Data directory for JSON files |
 | `AUTO_CHECK_FAST_MINUTES` | `60` | Auto-check interval when rate limits are healthy |
 | `AUTO_CHECK_MINUTES` | `360` | Auto-check interval when rate limits are low |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token for notifications (optional) |
 
 ## Architecture
 
