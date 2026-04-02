@@ -1613,8 +1613,13 @@
 }
 
 .tg-input-name {
-  max-width: 100px;
-  flex: 0 0 auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-input-value {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ===== Notification bell column ===== */
@@ -1744,9 +1749,38 @@
   text-decoration: underline;
 }
 
+.tg-global-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
 .tg-add-row {
   display: flex;
   gap: 8px;
+}
+
+.tg-discover-flash {
+  font-size: 12px;
+  padding: 0;
+  margin-top: 0;
+  max-height: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  opacity: 0;
+  transition: all 0.3s;
+}
+
+.tg-discover-flash.visible {
+  padding: 8px 12px;
+  margin-top: 8px;
+  max-height: 60px;
+  opacity: 1;
 }
 
 .btn-add-chat {
@@ -1881,5 +1915,194 @@
     max-height: 60vh;
     overflow-y: auto;
   }
+
+  .tmpl-modal-card {
+    max-height: 95vh !important;
+  }
+
+  .tmpl-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .tmpl-send-row {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .tmpl-preview-header {
+    flex-wrap: wrap;
+  }
+}
+
+/* ===== Template Editor Modal ===== */
+.tmpl-modal-card {
+  max-width: 640px !important;
+}
+
+.tmpl-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tmpl-toolbar {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tmpl-tb-btn {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1.2;
+}
+
+.tmpl-tb-btn:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tmpl-tb-token {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+.tmpl-tb-token:hover {
+  background: var(--accent-glow-strong);
+}
+
+.tmpl-tb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.tmpl-editor {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 120px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.tmpl-editor:focus {
+  border-color: var(--accent);
+}
+
+.tmpl-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tmpl-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.tmpl-preview-select {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+
+.tmpl-preview-select:focus {
+  border-color: var(--accent);
+}
+
+.tmpl-send-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.tmpl-send-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 14px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.tmpl-send-btn:hover {
+  background: var(--accent-hover);
+}
+
+.tmpl-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tmpl-preview {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  min-height: 60px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.tmpl-preview code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--text-bright);
+}
+
+.tmpl-preview pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  overflow-x: auto;
+  color: var(--text-bright);
+  white-space: pre-wrap;
 }
 

@@ -48,6 +48,13 @@ const CACHE_FILE = path.join(DATA_DIR, 'last-result.json');
 const UPDATE_LOGS_FILE = path.join(DATA_DIR, 'update-logs.json');
 const TELEGRAM_CONFIG_FILE = path.join(DATA_DIR, 'telegram.json');
 const TELEGRAM_SENT_FILE = path.join(DATA_DIR, 'telegram-sent.json');
+const TELEGRAM_TEMPLATE_FILE = path.join(DATA_DIR, 'telegram-template.json');
+
+const DEFAULT_TELEGRAM_TEMPLATE = '<b>Update available!</b>\n\n' +
+  'Container: <code>{container}</code>\n' +
+  'Image: <code>{image}</code>\n' +
+  'Registry: {registry}\n' +
+  'Tag: {tag}';
 
 const CONTAINER_NOTIFY_FILE = path.join(DATA_DIR, 'container-notify.json');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
@@ -505,14 +512,40 @@ async function sendTelegramMessage(chatId, text) {
   });
 }
 
+function loadTelegramTemplate() {
+  try {
+    const data = JSON.parse(fs.readFileSync(TELEGRAM_TEMPLATE_FILE, 'utf8'));
+    return data && data.template ? data.template : DEFAULT_TELEGRAM_TEMPLATE;
+  } catch { return DEFAULT_TELEGRAM_TEMPLATE; }
+}
+
+function saveTelegramTemplate(template) {
+  try { fs.writeFileSync(TELEGRAM_TEMPLATE_FILE, JSON.stringify({ template }, null, 2)); } catch (e) { console.warn('[telegram] Failed to save template:', e.message); }
+}
+
+function renderTelegramTemplate(template, row) {
+  return template
+    .replace(/\{container\}/g, row.container || '')
+    .replace(/\{image\}/g, row.image || '')
+    .replace(/\{registry\}/g, row.registry || '')
+    .replace(/\{tag\}/g, row.tag || '')
+    .replace(/\{state\}/g, row.state || '')
+    .replace(/\{status\}/g, row.status || '')
+    .replace(/\{localDigest\}/g, row.localDigest || '')
+    .replace(/\{remoteDigest\}/g, row.remoteDigest || '');
+}
+
 async function sendTelegramNotifications(results) {
   if (!TELEGRAM_BOT_TOKEN) return;
   const config = loadTelegramConfig();
   if (!config.chats || config.chats.length === 0) return;
 
-  const outdated = results.filter(r => r.result === 'Outdated');
+  const runningOnly = config.runningOnly !== false; // default true
+  let outdated = results.filter(r => r.result === 'Outdated');
+  if (runningOnly) outdated = outdated.filter(r => r.state === 'running');
   if (outdated.length === 0) return;
 
+  const template = loadTelegramTemplate();
   const sent = loadTelegramSent();
   const cnotify = loadContainerNotify();
   let changed = false;
@@ -546,12 +579,7 @@ async function sendTelegramNotifications(results) {
         if (sent[key] && sent[key].remoteDigest === row.remoteDigest) continue;
       }
 
-      const text =
-        `<b>Update available!</b>\n\n` +
-        `Container: <code>${row.container}</code>\n` +
-        `Image: <code>${row.image}</code>\n` +
-        `Registry: ${row.registry}\n` +
-        `Tag: ${row.tag}`;
+      const text = renderTelegramTemplate(template, row);
 
       try {
         const result = await sendTelegramMessage(chatId, text);
@@ -610,13 +638,45 @@ app.post('/api/telegram/test', async (req, res) => {
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
   if (!TELEGRAM_BOT_TOKEN) return res.status(500).json({ error: 'TELEGRAM_BOT_TOKEN not configured' });
   try {
-    const result = await sendTelegramMessage(chatId,
-      '<b>Update available!</b>\n\n' +
-      'Container: <code>my-awesome-app</code>\n' +
-      'Image: <code>nginx:latest</code>\n' +
-      'Registry: docker.io\n' +
-      'Tag: latest\n\n' +
-      '<i>This is a test notification.</i>');
+    const template = loadTelegramTemplate();
+    const mockRow = { container: 'my-awesome-app', image: 'nginx:latest', registry: 'docker.io', tag: 'latest', state: 'running', status: 'Up 3 days', localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...' };
+    const text = renderTelegramTemplate(template, mockRow);
+    const result = await sendTelegramMessage(chatId, text);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/telegram/template', (_req, res) => {
+  res.json({ template: loadTelegramTemplate(), default: DEFAULT_TELEGRAM_TEMPLATE });
+});
+
+app.post('/api/telegram/template', (req, res) => {
+  const { template } = req.body;
+  if (typeof template !== 'string') return res.status(400).json({ error: 'template string required' });
+  saveTelegramTemplate(template);
+  res.json({ ok: true });
+});
+
+app.post('/api/telegram/template/send', async (req, res) => {
+  const { chatId, template, container } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!template) return res.status(400).json({ error: 'template required' });
+  if (!TELEGRAM_BOT_TOKEN) return res.status(500).json({ error: 'TELEGRAM_BOT_TOKEN not configured' });
+  let row;
+  if (container) {
+    try {
+      const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+      row = cache && cache.results && cache.results.find(r => r.container === container);
+    } catch {}
+  }
+  if (!row) {
+    row = { container: 'my-awesome-app', image: 'nginx:latest', registry: 'docker.io', tag: 'latest', state: 'running', status: 'Up 3 days', localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...' };
+  }
+  try {
+    const text = renderTelegramTemplate(template, row);
+    const result = await sendTelegramMessage(chatId, text);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -673,6 +733,31 @@ app.delete('/api/container-notify/:container', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Global SSE event bus (for pushing auto-check results to all connected clients)
+// ---------------------------------------------------------------------------
+const eventClients = [];
+
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.write(':ok\n\n');
+  eventClients.push(res);
+  req.on('close', () => {
+    const idx = eventClients.indexOf(res);
+    if (idx !== -1) eventClients.splice(idx, 1);
+  });
+});
+
+function broadcastEvent(event, data) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of eventClients) {
+    try { client.write(payload); } catch { /* disconnected */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auto-check scheduler
 // ---------------------------------------------------------------------------
 const AUTO_CHECK_FAST_MINUTES = parseInt(process.env.AUTO_CHECK_FAST_MINUTES, 10) || 60;
@@ -720,12 +805,15 @@ function scheduleNextAutoCheck() {
 
   autoCheckTimer = setTimeout(async () => {
     console.log('Running auto-check…');
+    broadcastEvent('auto-check-start', {});
     try {
       const autoResult = await runCheck(true, null, null);
       console.log('Auto-check complete.');
       sendTelegramNotifications(autoResult.results).catch(e => console.warn('[telegram] Notification error:', e.message));
+      broadcastEvent('auto-check-done', { timestamp: autoResult.timestamp, count: autoResult.results.length });
     } catch (e) {
       console.error('Auto-check failed:', e.message);
+      broadcastEvent('auto-check-done', { error: e.message });
     }
     scheduleNextAutoCheck();
   }, delay);

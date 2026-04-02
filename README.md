@@ -55,12 +55,18 @@ docker build -t docker-image-checker-king ./source
 - **Auto-check scheduler** — adapts interval based on Docker Hub rate limits
 - **Clickable stat cards** — filter by Up to date / Outdated / Unknown / Total
 - **Responsive table** — columns collapse progressively on smaller screens
-- **Telegram notifications** — get alerted when outdated containers are found, with per-container overrides
-- **Dark/Light theme** — toggle persisted in localStorage
+- **Telegram notifications** — get alerted when outdated containers are found, with per-container overrides, multiple chats and editable template.
+- **Dark/Light theme** — toggle persisted in localStorage with automatic support
 
 ## Telegram Notifications
 
 Get notified on Telegram when outdated containers are detected.
+
+Edit the message template to suit your own liking.
+
+You can add your bot to multiple chats and set different containers to notify in different chats.
+
+Mute notification on selected containers.
 
 ### Setup
 
