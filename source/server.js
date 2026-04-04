@@ -404,7 +404,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
     if (onProgress) onProgress({ index: i, total: containerList.length, container: name, image });
     const parsed = parseImageReference(image);
     if (!parsed) {
-      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', notifyState: getNotifyState(name) };
+      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', notifyState: getNotifyState(name, ctr.State) };
       results.push(row); if (onResult) onResult(row); continue;
     }
     let localDigest = null;
@@ -440,7 +440,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
     else if (localDigest === null) result = 'NoLocalDigest';
     else if (localDigest === remoteDigest) result = 'UpToDate';
     else result = 'Outdated';
-    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, notifyState: getNotifyState(name) };
+    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, notifyState: getNotifyState(name, ctr.State) };
     results.push(row); if (onResult) onResult(row);
   }
   const timestamp = new Date().toISOString();
@@ -541,13 +541,19 @@ async function sendTelegramNotifications(results) {
   if (!config.chats || config.chats.length === 0) return;
 
   const runningOnly = config.runningOnly !== false; // default true
+  const cnotify = loadContainerNotify();
   let outdated = results.filter(r => r.result === 'Outdated');
-  if (runningOnly) outdated = outdated.filter(r => r.state === 'running');
+  if (runningOnly) {
+    outdated = outdated.filter(r => {
+      if (r.state === 'running') return true;
+      const co = cnotify[r.container];
+      return !!(co && co.notifyWhenStopped);
+    });
+  }
   if (outdated.length === 0) return;
 
   const template = loadTelegramTemplate();
   const sent = loadTelegramSent();
-  const cnotify = loadContainerNotify();
   let changed = false;
 
   for (const chat of config.chats) {
@@ -606,11 +612,24 @@ const containerNotifyCache = createFileCache(CONTAINER_NOTIFY_FILE, () => ({}));
 function loadContainerNotify() { return containerNotifyCache.load(); }
 
 // Compute bell icon state for a container: "default" | "disabled" | "customized"
-function getNotifyState(containerName) {
+// Takes container state into account: if global "runningOnly" is on and the
+// container is not running, notifications are effectively disabled unless
+// the per-container override sets notifyWhenStopped=true.
+function getNotifyState(containerName, state) {
   const allOverrides = loadContainerNotify();
   const co = allOverrides[containerName];
+  if (co && co.enabled === false) return 'disabled';
+
+  let runningOnly = true;
+  try {
+    const cfg = loadTelegramConfig();
+    runningOnly = cfg.runningOnly !== false;
+  } catch { /* ignore */ }
+
+  if (state && state !== 'running' && runningOnly && !(co && co.notifyWhenStopped)) {
+    return 'disabled';
+  }
   if (!co) return 'default';
-  if (co.enabled === false) return 'disabled';
   return 'customized';
 }
 
@@ -831,7 +850,7 @@ app.get('/api/last-result', (_req, res) => {
   try {
     const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
     if (cache && cache.results) {
-      for (const row of cache.results) row.notifyState = getNotifyState(row.container);
+      for (const row of cache.results) row.notifyState = getNotifyState(row.container, row.state);
     }
     res.json(cache);
   } catch { res.json(null); }

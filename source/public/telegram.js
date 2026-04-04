@@ -167,6 +167,15 @@ var cnotifyCache = {};
 var cnotifyChatsCache = {};
 var cnotifyCurrentIdx = null;
 var cnotifyCurrentContainer = null;
+var cnotifyGlobalRunningOnly = true;
+
+function cnotifyGetRowState(container) {
+  if (!window.APP || !APP.results) return '';
+  for (var i = 0; i < APP.results.length; i++) {
+    if (APP.results[i].container === container) return APP.results[i].state || '';
+  }
+  return '';
+}
 
 function openContainerNotifyModal(container, idx) {
   cnotifyCurrentIdx = idx;
@@ -188,6 +197,7 @@ function openContainerNotifyModal(container, idx) {
     if (!co.chats) co.chats = {};
     cnotifyCache[container] = co;
     cnotifyChatsCache[container] = tgConfig.chats || [];
+    cnotifyGlobalRunningOnly = tgConfig.runningOnly !== false;
     renderContainerNotify(container, cnotifyChatsCache[container], co);
     updateCnotifyBtnState(idx, container);
     document.getElementById('cnotifyResetBtn').style.display = hasOverride ? '' : 'none';
@@ -212,11 +222,25 @@ function renderContainerNotify(container, chats, co) {
     return;
   }
   var masterChecked = co.enabled !== false;
-  var html =
+  var rowState = cnotifyGetRowState(container);
+  var isStopped = rowState && rowState !== 'running';
+  var showStoppedToggle = isStopped && cnotifyGlobalRunningOnly;
+  var stoppedChecked = co.notifyWhenStopped === true;
+  var globallyBlocked = showStoppedToggle && !stoppedChecked && co.enabled !== false;
+  var warningHtml = globallyBlocked ?
+    '<div class="cnotify-warning">⚠️ No notifications will be sent for this container because it is not running and the global <strong>"Only notify for running containers"</strong> setting is enabled. Turn on the toggle below to override.</div>'
+    : '';
+  var html = warningHtml +
     '<div class="cnotify-row cnotify-master">' +
       '<label class="tg-toggle"><input type="checkbox" ' + (masterChecked ? 'checked' : '') + ' onchange="cnotifySetEnabled(this.checked)"><span class="tg-toggle-slider"></span></label>' +
       '<span class="cnotify-label">Enable notifications for this container</span>' +
     '</div>' +
+    (showStoppedToggle ?
+      '<div class="cnotify-row cnotify-master">' +
+        '<label class="tg-toggle"><input type="checkbox" ' + (stoppedChecked ? 'checked' : '') + ' onchange="cnotifySetNotifyWhenStopped(this.checked)"><span class="tg-toggle-slider"></span></label>' +
+        '<span class="cnotify-label">Notify even if this container is not running</span>' +
+      '</div>'
+      : '') +
     '<div class="cnotify-chats" id="cnotify-chats-modal" style="' + (masterChecked ? '' : 'display:none') + '">';
 
   for (var i = 0; i < chats.length; i++) {
@@ -248,17 +272,26 @@ function updateCnotifyBtnState(idx, container) {
   icon.className = 'cnotify-icon';
   if (btn) btn.classList.remove('cnotify-state-disabled');
 
-  if (!co) return;
+  var rowState = cnotifyGetRowState(container);
+  var effectivelyStoppedDisabled =
+    rowState && rowState !== 'running' && cnotifyGlobalRunningOnly && !(co && co.notifyWhenStopped);
 
-  if (co.enabled === false) {
+  if (co && co.enabled === false) {
+    icon.classList.add('cnotify-disabled');
+    if (btn) btn.classList.add('cnotify-state-disabled');
+    return;
+  }
+  if (effectivelyStoppedDisabled) {
     icon.classList.add('cnotify-disabled');
     if (btn) btn.classList.add('cnotify-state-disabled');
     return;
   }
 
+  if (!co) return;
+
   var chats = cnotifyChatsCache[container] || [];
-  var customized = false;
-  for (var i = 0; i < chats.length; i++) {
+  var customized = co.notifyWhenStopped === true;
+  for (var i = 0; i < chats.length && !customized; i++) {
     var chatId = chats[i].chatId;
     var ov = co.chats && co.chats[chatId];
     if (!ov) continue;
@@ -266,6 +299,23 @@ function updateCnotifyBtnState(idx, container) {
     if (ov.mode && ov.mode !== (chats[i].mode || 'once')) { customized = true; break; }
   }
   if (customized) icon.classList.add('cnotify-customized');
+}
+
+function cnotifySetNotifyWhenStopped(val) {
+  var container = cnotifyCurrentContainer;
+  var idx = cnotifyCurrentIdx;
+  var co = cnotifyCache[container];
+  if (!co) return;
+  co.notifyWhenStopped = !!val;
+  renderContainerNotify(container, cnotifyChatsCache[container] || [], co);
+  var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+  if (row) {
+    if (co.enabled === false) row.notifyState = 'disabled';
+    else if (row.state !== 'running' && cnotifyGlobalRunningOnly && !val) row.notifyState = 'disabled';
+    else row.notifyState = 'customized';
+  }
+  updateCnotifyBtnState(idx, container);
+  cnotifySave();
 }
 
 function loadAllCnotifyStates() {
@@ -354,7 +404,10 @@ function saveTelegramSettings() {
   })
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (d.ok) closeSettingsModal();
+      if (d.ok) {
+        closeSettingsModal();
+        if (typeof restoreLastResult === 'function') restoreLastResult();
+      }
       else alert('Failed to save: ' + JSON.stringify(d));
     })
     .catch(function (e) { alert('Error: ' + e.message); });
