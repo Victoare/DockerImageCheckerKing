@@ -98,12 +98,15 @@ var RESULT_ORDER = { Outdated: 0, UpToDate: 1, Unknown: 2, NoLocalDigest: 3, Pin
 
 function sortResults() {
   APP.results.sort(function (a, b) {
-    var sa = STATE_ORDER[a.state] !== undefined ? STATE_ORDER[a.state] : 9;
-    var sb = STATE_ORDER[b.state] !== undefined ? STATE_ORDER[b.state] : 9;
-    if (sa !== sb) return sa - sb;
+    var na = a.notifyState === 'disabled' ? 1 : 0;
+    var nb = b.notifyState === 'disabled' ? 1 : 0;
+    if (na !== nb) return na - nb;
     var ra = RESULT_ORDER[a.result] !== undefined ? RESULT_ORDER[a.result] : 9;
     var rb = RESULT_ORDER[b.result] !== undefined ? RESULT_ORDER[b.result] : 9;
     if (ra !== rb) return ra - rb;
+    var sa = STATE_ORDER[a.state] !== undefined ? STATE_ORDER[a.state] : 9;
+    var sb = STATE_ORDER[b.state] !== undefined ? STATE_ORDER[b.state] : 9;
+    if (sa !== sb) return sa - sb;
     return a.container.localeCompare(b.container);
   });
 }
