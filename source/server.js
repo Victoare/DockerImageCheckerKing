@@ -404,7 +404,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
     if (onProgress) onProgress({ index: i, total: containerList.length, container: name, image });
     const parsed = parseImageReference(image);
     if (!parsed) {
-      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', notifyState: getNotifyState(name, ctr.State) };
+      const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', ...getNotifyInfo(name, ctr.State) };
       results.push(row); if (onResult) onResult(row); continue;
     }
     let localDigest = null;
@@ -440,7 +440,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
     else if (localDigest === null) result = 'NoLocalDigest';
     else if (localDigest === remoteDigest) result = 'UpToDate';
     else result = 'Outdated';
-    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, notifyState: getNotifyState(name, ctr.State) };
+    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, ...getNotifyInfo(name, ctr.State) };
     results.push(row); if (onResult) onResult(row);
   }
   const timestamp = new Date().toISOString();
@@ -615,22 +615,31 @@ function loadContainerNotify() { return containerNotifyCache.load(); }
 // Takes container state into account: if global "runningOnly" is on and the
 // container is not running, notifications are effectively disabled unless
 // the per-container override sets notifyWhenStopped=true.
-function getNotifyState(containerName, state) {
+function getNotifyInfo(containerName, state) {
   const allOverrides = loadContainerNotify();
   const co = allOverrides[containerName];
-  if (co && co.enabled === false) return 'disabled';
+  let cfg;
+  try { cfg = loadTelegramConfig(); } catch { cfg = {}; }
+  const runningOnly = cfg.runningOnly !== false;
+  const chats = cfg.chats || [];
+  const customized = !!co;
 
-  let runningOnly = true;
-  try {
-    const cfg = loadTelegramConfig();
-    runningOnly = cfg.runningOnly !== false;
-  } catch { /* ignore */ }
-
-  if (state && state !== 'running' && runningOnly && !(co && co.notifyWhenStopped)) {
-    return 'disabled';
+  if (co && co.enabled === false) {
+    return { notifyActive: false, notifyCustomized: customized };
   }
-  if (!co) return 'default';
-  return 'customized';
+  if (state && state !== 'running' && runningOnly && !(co && co.notifyWhenStopped)) {
+    return { notifyActive: false, notifyCustomized: customized };
+  }
+
+  // Check if at least one chat would actually send to this container
+  let active = false;
+  for (const chat of chats) {
+    if (!chat.enabled) continue;
+    if (co && co.chats && co.chats[chat.chatId] && co.chats[chat.chatId].enabled === false) continue;
+    active = true;
+    break;
+  }
+  return { notifyActive: active, notifyCustomized: customized };
 }
 
 function saveContainerNotify(data) {
@@ -850,7 +859,7 @@ app.get('/api/last-result', (_req, res) => {
   try {
     const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
     if (cache && cache.results) {
-      for (const row of cache.results) row.notifyState = getNotifyState(row.container, row.state);
+      for (const row of cache.results) Object.assign(row, getNotifyInfo(row.container, row.state));
     }
     res.json(cache);
   } catch { res.json(null); }

@@ -1651,7 +1651,7 @@
 }
 
 .cnotify-bell-btn.cnotify-state-disabled {
-  opacity: 0.4;
+  opacity: 1;
 }
 
 .cnotify-icon {

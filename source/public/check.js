@@ -98,8 +98,8 @@ var RESULT_ORDER = { Outdated: 0, UpToDate: 1, Unknown: 2, NoLocalDigest: 3, Pin
 
 function sortResults() {
   APP.results.sort(function (a, b) {
-    var na = a.notifyState === 'disabled' ? 1 : 0;
-    var nb = b.notifyState === 'disabled' ? 1 : 0;
+    var na = a.notifyActive ? 0 : 1;
+    var nb = b.notifyActive ? 0 : 1;
     if (na !== nb) return na - nb;
     var ra = RESULT_ORDER[a.result] !== undefined ? RESULT_ORDER[a.result] : 9;
     var rb = RESULT_ORDER[b.result] !== undefined ? RESULT_ORDER[b.result] : 9;
@@ -186,12 +186,13 @@ function appendRow(row, idx) {
   tbody.appendChild(tr);
 
   // Apply notify state from server
-  if (row.notifyState === 'disabled') {
+  if (!row.notifyActive) {
     var ni = document.getElementById('cnotify-icon-' + idx);
     var nb = document.getElementById('cnotify-btn-' + idx);
     if (ni) ni.classList.add('cnotify-disabled');
     if (nb) nb.classList.add('cnotify-state-disabled');
-  } else if (row.notifyState === 'customized') {
+  }
+  if (row.notifyCustomized) {
     var ni2 = document.getElementById('cnotify-icon-' + idx);
     if (ni2) ni2.classList.add('cnotify-customized');
   }

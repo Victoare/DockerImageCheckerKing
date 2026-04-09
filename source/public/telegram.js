@@ -276,29 +276,32 @@ function updateCnotifyBtnState(idx, container) {
   var effectivelyStoppedDisabled =
     rowState && rowState !== 'running' && cnotifyGlobalRunningOnly && !(co && co.notifyWhenStopped);
 
+  // Determine if notifications are active (at least one chat would send)
+  var active = true;
   if (co && co.enabled === false) {
-    icon.classList.add('cnotify-disabled');
-    if (btn) btn.classList.add('cnotify-state-disabled');
-    return;
-  }
-  if (effectivelyStoppedDisabled) {
-    icon.classList.add('cnotify-disabled');
-    if (btn) btn.classList.add('cnotify-state-disabled');
-    return;
+    active = false;
+  } else if (effectivelyStoppedDisabled) {
+    active = false;
+  } else {
+    // Check if any chat would actually send
+    var chats = cnotifyChatsCache[container] || [];
+    var anyChat = false;
+    for (var i = 0; i < chats.length; i++) {
+      if (!chats[i].enabled) continue;
+      if (co && co.chats && co.chats[chats[i].chatId] && co.chats[chats[i].chatId].enabled === false) continue;
+      anyChat = true;
+      break;
+    }
+    active = anyChat;
   }
 
-  if (!co) return;
-
-  var chats = cnotifyChatsCache[container] || [];
-  var customized = co.notifyWhenStopped === true;
-  for (var i = 0; i < chats.length && !customized; i++) {
-    var chatId = chats[i].chatId;
-    var ov = co.chats && co.chats[chatId];
-    if (!ov) continue;
-    if (ov.enabled === false) { customized = true; break; }
-    if (ov.mode && ov.mode !== (chats[i].mode || 'once')) { customized = true; break; }
+  if (!active) {
+    icon.classList.add('cnotify-disabled');
+    if (btn) btn.classList.add('cnotify-state-disabled');
   }
-  if (customized) icon.classList.add('cnotify-customized');
+
+  // Determine if customized (any override exists)
+  if (co) icon.classList.add('cnotify-customized');
 }
 
 function cnotifySetNotifyWhenStopped(val) {
@@ -310,27 +313,29 @@ function cnotifySetNotifyWhenStopped(val) {
   renderContainerNotify(container, cnotifyChatsCache[container] || [], co);
   var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
   if (row) {
-    if (co.enabled === false) row.notifyState = 'disabled';
-    else if (row.state !== 'running' && cnotifyGlobalRunningOnly && !val) row.notifyState = 'disabled';
-    else row.notifyState = 'customized';
+    row.notifyCustomized = true;
+    if (co.enabled === false) row.notifyActive = false;
+    else if (row.state !== 'running' && cnotifyGlobalRunningOnly && !val) row.notifyActive = false;
+    else row.notifyActive = true;
   }
   updateCnotifyBtnState(idx, container);
   cnotifySave();
 }
 
 function loadAllCnotifyStates() {
-  // Refresh bell icons from APP.results notifyState after table rebuild
+  // Refresh bell icons from APP.results after table rebuild
   for (var i = 0; i < APP.results.length; i++) {
     var row = APP.results[i];
     var idx = i + 1;
-    if (row.notifyState === 'disabled') {
-      var ni = document.getElementById('cnotify-icon-' + idx);
-      var nb = document.getElementById('cnotify-btn-' + idx);
-      if (ni) ni.classList.add('cnotify-disabled');
+    var ni = document.getElementById('cnotify-icon-' + idx);
+    var nb = document.getElementById('cnotify-btn-' + idx);
+    if (!ni) continue;
+    if (!row.notifyActive) {
+      ni.classList.add('cnotify-disabled');
       if (nb) nb.classList.add('cnotify-state-disabled');
-    } else if (row.notifyState === 'customized') {
-      var ni2 = document.getElementById('cnotify-icon-' + idx);
-      if (ni2) ni2.classList.add('cnotify-customized');
+    }
+    if (row.notifyCustomized) {
+      ni.classList.add('cnotify-customized');
     }
   }
 }
@@ -353,7 +358,7 @@ function cnotifySetEnabled(val) {
   var idx = cnotifyCurrentIdx;
   cnotifyCache[container].enabled = val;
   var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
-  if (row) row.notifyState = val ? 'customized' : 'disabled';
+  if (row) { row.notifyCustomized = true; row.notifyActive = !!val; }
   var chatsEl = document.getElementById('cnotify-chats-modal');
   if (chatsEl) chatsEl.style.display = val ? '' : 'none';
   updateCnotifyBtnState(idx, container);
@@ -389,7 +394,7 @@ function cnotifyResetToDefault() {
     .then(function () {
       delete cnotifyCache[container];
       var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
-      if (row) row.notifyState = 'default';
+      if (row) { row.notifyCustomized = false; }
       if (idx !== null) updateCnotifyBtnState(idx, container);
       closeCnotifyModal();
     });
