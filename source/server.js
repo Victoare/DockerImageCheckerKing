@@ -558,6 +558,15 @@ function loadTelegramSent() {
   try { return JSON.parse(fs.readFileSync(TELEGRAM_SENT_FILE, 'utf8')); } catch { return {}; }
 }
 
+function clearTelegramSentForContainer(containerName) {
+  const sent = loadTelegramSent();
+  let changed = false;
+  for (const k of Object.keys(sent)) {
+    if (k.endsWith(':' + containerName)) { delete sent[k]; changed = true; }
+  }
+  if (changed) saveTelegramSent(sent);
+}
+
 function saveTelegramSent(sent) {
   try { fs.writeFileSync(TELEGRAM_SENT_FILE, JSON.stringify(sent, null, 2)); } catch (e) { console.warn('[telegram] Failed to save sent state:', e.message); }
 }
@@ -664,7 +673,8 @@ async function sendTelegramNotifications(results) {
       const digestKey = `${row.localDigest}|${row.remoteDigest}`;
 
       if (effectiveMode === 'once') {
-        if (sent[key] && sent[key].digestKey === digestKey) continue;
+        // Send only once per container until an update happens (which clears sent[key]).
+        if (sent[key]) continue;
       } else {
         if (sent[key] && sent[key].remoteDigest === row.remoteDigest) continue;
       }
@@ -1113,7 +1123,10 @@ function finishUpdate(containerName, status) {
   state.status = status;
   saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt: new Date().toISOString(), status, log: state.log });
   broadcastStatus(containerName, status);
-  if (status === 'done') refreshCacheAfterUpdate(containerName, state.image);
+  if (status === 'done') {
+    refreshCacheAfterUpdate(containerName, state.image);
+    clearTelegramSentForContainer(containerName);
+  }
   setTimeout(() => delete activeUpdates[containerName], 30000);
 }
 
