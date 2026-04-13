@@ -171,9 +171,9 @@ function appendRow(row, idx) {
     '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" onclick="toggleDetail(' + idx + ')">&#8250;</button></td>' +
     '<td class="col-state"><span class="state-dot-mobile ' + dotClass + '"></span><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></td>' +
     '<td class="col-container"><span class="container-name">' + esc(row.container) + '</span></td>' +
-    '<td class="col-registry"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--text-dim);">' + esc(row.registry) + '</span></td>' +
     '<td class="col-image"><span class="image-name">' + esc(row.image) + '</span></td>' +
-    '<td class="col-tag"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></td>' +
+    '<td class="col-version"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.localVersion || '-') + '</span></td>' +
+    '<td class="col-version"><span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.remoteVersion || '-') + '</span></td>' +
     '<td class="col-status"><span class="result-badge result-' + row.result + '"><span class="dot"></span><span class="result-full">' + (resultLabels[row.result] || row.result) + '</span><span class="result-short">' + (resultShort[row.result] || '?') + '</span></span></td>' +
     '<td class="col-actions">' + updateBtnMain + '</td>' +
     '<td class="col-notify"><button class="cnotify-bell-btn" id="cnotify-btn-' + idx + '" onclick="openContainerNotifyModal(\'' + esc(row.container) + '\', ' + idx + ')" title="Notification settings">' +
@@ -224,6 +224,8 @@ function appendRow(row, idx) {
     '<div class="detail-item detail-tag"><span class="detail-label">Tag</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.tag) + '</span></div>' +
     '<div class="detail-item detail-state"><span class="detail-label">State</span><span class="detail-value"><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></span></div>' +
     '<div class="detail-item detail-status"><span class="detail-label">Status</span><span class="detail-value"><span class="result-badge result-' + row.result + '" id="detail-badge-' + idx + '"><span class="dot"></span>' + (resultLabels[row.result] || row.result) + '</span></span></div>' +
+    '<div class="detail-item"><span class="detail-label">Local Version</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.localVersion || '-') + '</span></div>' +
+    '<div class="detail-item"><span class="detail-label">Remote Version</span><span class="detail-value" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.remoteVersion || '-') + '</span></div>' +
     '<div class="detail-item"><span class="detail-label">Local Digest</span><span class="detail-value digest-val">' + esc(row.localDigest) + '</span></div>' +
     '<div class="detail-item"><span class="detail-label">Remote Digest</span><span class="detail-value digest-val">' + esc(row.remoteDigest) + '</span></div>' +
     '</div>' +

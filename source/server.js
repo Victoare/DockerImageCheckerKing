@@ -391,11 +391,74 @@ async function getRemoteDigest(registry, repo, tag) {
 }
 
 // ---------------------------------------------------------------------------
+// Fetch remote OCI version label by walking manifest -> config blob
+// ---------------------------------------------------------------------------
+async function getRemoteVersion(registry, repo, tag) {
+  const handler = getRegistryHandler(registry);
+  let manifestUrl, headers = { 'Accept': ACCEPT_HEADER };
+
+  if (handler) {
+    manifestUrl = handler.getManifestUrl(repo, tag, registry);
+    const token = await handler.authenticate(repo, registry, manifestUrl);
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    else if (registry === 'docker.io' || registry === 'ghcr.io') return null;
+  } else {
+    manifestUrl = `https://${registry}/v2/${repo}/manifests/${tag}`;
+    try {
+      const test = await httpsHead(manifestUrl, headers);
+      if (test.statusCode === 401 && test.headers['www-authenticate']) {
+        const token = await getTokenFromChallenge(registry, repo, test.headers['www-authenticate']);
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        else return null;
+      }
+    } catch { return null; }
+  }
+
+  const baseUrl = manifestUrl.replace(/\/manifests\/[^/]+$/, '');
+  try {
+    let mres = await httpsGet(manifestUrl, headers);
+    if (mres.statusCode !== 200) return null;
+    let manifest;
+    try { manifest = JSON.parse(mres.body); } catch { return null; }
+
+    // Manifest list / OCI index: pick a platform-specific entry (linux/amd64 preferred)
+    if (Array.isArray(manifest.manifests) && manifest.manifests.length > 0) {
+      const pick = manifest.manifests.find(m => m.platform && m.platform.os === 'linux' && m.platform.architecture === 'amd64')
+        || manifest.manifests.find(m => m.platform && m.platform.os === 'linux')
+        || manifest.manifests[0];
+      if (!pick || !pick.digest) return null;
+      mres = await httpsGet(`${baseUrl}/manifests/${pick.digest}`, headers);
+      if (mres.statusCode !== 200) return null;
+      try { manifest = JSON.parse(mres.body); } catch { return null; }
+    }
+
+    const configDigest = manifest.config && manifest.config.digest;
+    if (!configDigest) return null;
+
+    const bres = await httpsGet(`${baseUrl}/blobs/${configDigest}`, headers);
+    if (bres.statusCode !== 200) return null;
+    let config;
+    try { config = JSON.parse(bres.body); } catch { return null; }
+
+    const labels = (config.config && config.config.Labels) || (config.Config && config.Config.Labels) || null;
+    if (!labels) return null;
+    return labels['org.opencontainers.image.version']
+        || labels['org.label-schema.version']
+        || labels['version']
+        || null;
+  } catch (e) {
+    console.warn(`[version] Failed for ${registry}/${repo}:${tag}:`, e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Shared check logic (used by both SSE endpoint and auto-check)
 // ---------------------------------------------------------------------------
 async function runCheck(includeStopped, onProgress, onResult) {
   const containerList = await dockerApi('GET', `/containers/json?all=${includeStopped}`);
   const digestCache = {};
+  const versionCache = {};
   const results = [];
   for (let i = 0; i < containerList.length; i++) {
     const ctr = containerList[i];
@@ -408,23 +471,27 @@ async function runCheck(includeStopped, onProgress, onResult) {
       results.push(row); if (onResult) onResult(row); continue;
     }
     let localDigest = null;
-    try {
-      const inspect = await dockerApi('GET', `/images/${encodeURIComponent(image)}/json`);
+    let localVersion = null;
+    const extractFromInspect = (inspect) => {
       if (inspect.RepoDigests && inspect.RepoDigests.length > 0) {
         for (const d of inspect.RepoDigests) {
           const m = d.match(/@(sha256:[a-f0-9]+)/);
           if (m) { localDigest = m[1]; break; }
         }
       }
+      const labels = (inspect.Config && inspect.Config.Labels) || null;
+      if (labels) {
+        localVersion = labels['org.opencontainers.image.version']
+          || labels['org.label-schema.version']
+          || labels['version']
+          || null;
+      }
+    };
+    try {
+      extractFromInspect(await dockerApi('GET', `/images/${encodeURIComponent(image)}/json`));
     } catch (e) {
       try {
-        const inspect = await dockerApi('GET', `/images/${ctr.ImageID}/json`);
-        if (inspect.RepoDigests && inspect.RepoDigests.length > 0) {
-          for (const d of inspect.RepoDigests) {
-            const m = d.match(/@(sha256:[a-f0-9]+)/);
-            if (m) { localDigest = m[1]; break; }
-          }
-        }
+        extractFromInspect(await dockerApi('GET', `/images/${ctr.ImageID}/json`));
       } catch (e2) { console.warn(`[check] Could not inspect image for ${name}:`, e2.message); }
     }
     let remoteDigest = null, fromCache = false;
@@ -435,12 +502,20 @@ async function runCheck(includeStopped, onProgress, onResult) {
       if (remoteDigest === null && parsed.registry !== 'docker.io') remoteDigest = await getRemoteDigest('docker.io', parsed.repo, parsed.tag);
       digestCache[parsed.cacheKey] = remoteDigest;
     }
+    let remoteVersion = null;
+    if (versionCache.hasOwnProperty(parsed.cacheKey)) {
+      remoteVersion = versionCache[parsed.cacheKey];
+    } else {
+      remoteVersion = await getRemoteVersion(parsed.registry, parsed.repo, parsed.tag);
+      if (remoteVersion === null && parsed.registry !== 'docker.io') remoteVersion = await getRemoteVersion('docker.io', parsed.repo, parsed.tag);
+      versionCache[parsed.cacheKey] = remoteVersion;
+    }
     let result = 'Unknown';
     if (remoteDigest === null) result = 'Unknown';
     else if (localDigest === null) result = 'NoLocalDigest';
     else if (localDigest === remoteDigest) result = 'UpToDate';
     else result = 'Outdated';
-    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', cached: fromCache, ...getNotifyInfo(name, ctr.State) };
+    const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', localVersion: localVersion || '-', remoteVersion: remoteVersion || '-', cached: fromCache, ...getNotifyInfo(name, ctr.State) };
     results.push(row); if (onResult) onResult(row);
   }
   const timestamp = new Date().toISOString();
@@ -524,15 +599,24 @@ function saveTelegramTemplate(template) {
 }
 
 function renderTelegramTemplate(template, row) {
-  return template
-    .replace(/\{container\}/g, row.container || '')
-    .replace(/\{image\}/g, row.image || '')
-    .replace(/\{registry\}/g, row.registry || '')
-    .replace(/\{tag\}/g, row.tag || '')
-    .replace(/\{state\}/g, row.state || '')
-    .replace(/\{status\}/g, row.status || '')
-    .replace(/\{localDigest\}/g, row.localDigest || '')
-    .replace(/\{remoteDigest\}/g, row.remoteDigest || '');
+  const tokens = {
+    container: row.container, image: row.image, registry: row.registry, tag: row.tag,
+    state: row.state, status: row.status,
+    localDigest: row.localDigest, remoteDigest: row.remoteDigest,
+    localVersion: row.localVersion, remoteVersion: row.remoteVersion
+  };
+  const has = (name) => {
+    const v = tokens[name];
+    return v !== undefined && v !== null && v !== '' && v !== '-';
+  };
+  // Conditional blocks: {?token}...{/}  (non-greedy, supports nesting-free usage)
+  let out = template.replace(/\{\?(\w+)\}([\s\S]*?)\{\/\}/g, (_, name, inner) => has(name) ? inner : '');
+  // Token substitution
+  out = out.replace(/\{(\w+)\}/g, (m, name) => {
+    if (tokens.hasOwnProperty(name)) return has(name) ? tokens[name] : '';
+    return m;
+  });
+  return out.trim();
 }
 
 async function sendTelegramNotifications(results) {
@@ -772,7 +856,11 @@ app.get('/api/events', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.write(':ok\n\n');
   eventClients.push(res);
+  const keepalive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { /* disconnected */ }
+  }, 25000);
   req.on('close', () => {
+    clearInterval(keepalive);
     const idx = eventClients.indexOf(res);
     if (idx !== -1) eventClients.splice(idx, 1);
   });

@@ -64,19 +64,22 @@ function tmplPopulateChatSelect() {
 var TMPL_MOCK = {
   container: 'my-awesome-app', image: 'nginx:latest', registry: 'docker.io',
   tag: 'latest', state: 'running', status: 'Up 3 days',
-  localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...'
+  localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...',
+  localVersion: '1.25.3', remoteVersion: '1.25.4'
 };
 
 function tmplRenderPreview(template, data) {
-  return template
-    .replace(/\{container\}/g, data.container || '')
-    .replace(/\{image\}/g, data.image || '')
-    .replace(/\{registry\}/g, data.registry || '')
-    .replace(/\{tag\}/g, data.tag || '')
-    .replace(/\{state\}/g, data.state || '')
-    .replace(/\{status\}/g, data.status || '')
-    .replace(/\{localDigest\}/g, data.localDigest || '')
-    .replace(/\{remoteDigest\}/g, data.remoteDigest || '');
+  var has = function (name) {
+    var v = data[name];
+    return v !== undefined && v !== null && v !== '' && v !== '-';
+  };
+  var out = template.replace(/\{\?(\w+)\}([\s\S]*?)\{\/\}/g, function (_, name, inner) {
+    return has(name) ? inner : '';
+  });
+  return out.replace(/\{(\w+)\}/g, function (m, name) {
+    if (data.hasOwnProperty(name)) return has(name) ? data[name] : '';
+    return m;
+  }).trim();
 }
 
 function tmplUpdatePreview() {

@@ -105,9 +105,9 @@
               <th class="col-expand"></th>
               <th class="col-state"><span class="col-state-text">State</span></th>
               <th class="col-container">Container</th>
-              <th class="col-registry">Registry</th>
               <th class="col-image">Image</th>
-              <th class="col-tag">Tag</th>
+              <th class="col-version">Detected</th>
+              <th class="col-version">Available</th>
               <th class="col-status" colspan="3">Status</th>
             </tr>
           </thead>
@@ -197,8 +197,12 @@
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{registry}" title="Registry">{registry}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{state}" title="Container state">{state}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{status}" title="Container status">{status}</button>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{localVersion}" title="Detected version (OCI label)">{localVersion}</button>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{remoteVersion}" title="Available version (OCI label)">{remoteVersion}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{localDigest}" title="Local digest">{localDigest}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{remoteDigest}" title="Remote digest">{remoteDigest}</button>
+            <span class="tmpl-tb-sep"></span>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-wrap="{?localVersion}|{/}" title="Only render if the token has a value. Replace 'localVersion' with any token name.">{?…}{/}</button>
           </div>
           <textarea class="tmpl-editor" id="tmplEditor" rows="8" spellcheck="false" oninput="tmplUpdatePreview()"></textarea>
           <div class="tmpl-preview-section">
