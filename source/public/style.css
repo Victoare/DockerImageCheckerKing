@@ -865,6 +865,13 @@
   }
 
   /* ===== Responsive column hiding ===== */
+  /* col-version (Detected/Available) hidden below 1200px — always visible in detail row */
+  @media (max-width: 1279px) {
+    .col-version {
+      display: none;
+    }
+  }
+
   /* col-image hidden below 1024px */
   @media (max-width: 1023px) {
     .col-image {
