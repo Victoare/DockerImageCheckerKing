@@ -57,6 +57,7 @@ const DEFAULT_TELEGRAM_TEMPLATE = '<b>Update available!</b>\n\n' +
   'Tag: {tag}';
 
 const CONTAINER_NOTIFY_FILE = path.join(DATA_DIR, 'container-notify.json');
+const ACTIVITY_LOG_FILE = path.join(DATA_DIR, 'activity.jsonl');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
 // Ensure data directory exists
@@ -69,6 +70,14 @@ app.use(express.json());
 // { [containerName]: { image, status: 'running'|'done'|'failed', log: [{time,msg,type}], clients: [res] } }
 // ---------------------------------------------------------------------------
 const activeUpdates = {};
+
+// ---------------------------------------------------------------------------
+// Activity log (check summaries, update events, notification attempts)
+// ---------------------------------------------------------------------------
+function appendActivityLog(entry) {
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
+  try { fs.appendFileSync(ACTIVITY_LOG_FILE, line); } catch (e) { console.warn('[activity-log] Failed to write:', e.message); }
+}
 
 // ---------------------------------------------------------------------------
 // Registry rate-limit tracking
@@ -456,6 +465,15 @@ async function getRemoteVersion(registry, repo, tag) {
 // Shared check logic (used by both SSE endpoint and auto-check)
 // ---------------------------------------------------------------------------
 async function runCheck(includeStopped, onProgress, onResult) {
+  // Load previous results to detect digest changes for update-event logging
+  let prevDigests = {};
+  try {
+    const prev = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (prev && prev.results) {
+      for (const r of prev.results) prevDigests[r.container] = r.remoteDigest;
+    }
+  } catch { /* no previous cache */ }
+
   const containerList = await dockerApi('GET', `/containers/json?all=${includeStopped}`);
   const digestCache = {};
   const versionCache = {};
@@ -520,6 +538,13 @@ async function runCheck(includeStopped, onProgress, onResult) {
   }
   const timestamp = new Date().toISOString();
   try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp, results }, null, 2)); } catch (e) { console.warn('[check] Failed to save cache:', e.message); }
+  const outdatedResults = results.filter(r => r.result === 'Outdated');
+  appendActivityLog({ type: 'check', checked: results.length, outdated: outdatedResults.length });
+  for (const r of outdatedResults) {
+    if (prevDigests[r.container] !== r.remoteDigest) {
+      appendActivityLog({ type: 'update-event', container: r.container, image: r.image, state: r.state, localDigest: r.localDigest, remoteDigest: r.remoteDigest });
+    }
+  }
   return { timestamp, results };
 }
 
@@ -633,14 +658,17 @@ async function sendTelegramNotifications(results) {
   const config = loadTelegramConfig();
   if (!config.chats || config.chats.length === 0) return;
 
-  const runningOnly = config.runningOnly !== false; // default true
+  const runningOnly = config.runningOnly !== false;
   const cnotify = loadContainerNotify();
+
   let outdated = results.filter(r => r.result === 'Outdated');
   if (runningOnly) {
     outdated = outdated.filter(r => {
       if (r.state === 'running') return true;
       const co = cnotify[r.container];
-      return !!(co && co.notifyWhenStopped);
+      if (co && co.notifyWhenStopped) return true;
+      appendActivityLog({ type: 'notify-skip', container: r.container, reason: 'not-running', detail: 'Global runningOnly is on and container has no notifyWhenStopped override' });
+      return false;
     });
   }
   if (outdated.length === 0) return;
@@ -654,46 +682,62 @@ async function sendTelegramNotifications(results) {
     const chatId = chat.chatId;
 
     for (const row of outdated) {
-      // Per-container override check
       const co = cnotify[row.container];
-      if (co) {
-        if (co.enabled === false) continue; // all notifications disabled for this container
-        if (co.chats && co.chats[chatId]) {
-          if (co.chats[chatId].enabled === false) continue; // this chat disabled for this container
-        }
+      const logBase = { container: row.container, chatId };
+
+      if (co && co.enabled === false) {
+        appendActivityLog({ type: 'notify-skip', ...logBase, reason: 'container-disabled', detail: 'Notifications disabled for this container' });
+        continue;
+      }
+      if (co && co.chats && co.chats[chatId] && co.chats[chatId].enabled === false) {
+        appendActivityLog({ type: 'notify-skip', ...logBase, reason: 'chat-disabled', detail: 'Notifications disabled for this container+chat combination' });
+        continue;
       }
 
-      // Determine effective mode: per-container chat override > global chat default
+      // Effective mode: per-container chat override > global chat default
       let effectiveMode = chat.mode || 'once';
       if (co && co.chats && co.chats[chatId] && co.chats[chatId].mode) {
         effectiveMode = co.chats[chatId].mode;
       }
 
       const key = `${chatId}:${row.container}`;
-      const digestKey = `${row.localDigest}|${row.remoteDigest}`;
 
       if (effectiveMode === 'once') {
-        // Send only once per container until an update happens (which clears sent[key]).
-        if (sent[key]) continue;
+        // Send once per outdated state; cleared only when container is updated via this tool
+        if (sent[key]) {
+          appendActivityLog({ type: 'notify-skip', ...logBase, mode: 'once', reason: 'already-sent', detail: 'Already notified; waiting for container update to reset' });
+          continue;
+        }
       } else {
-        if (sent[key] && sent[key].remoteDigest === row.remoteDigest) continue;
+        // 'every': resend whenever remote digest changed since last sent notification
+        if (sent[key] && sent[key].remoteDigest === row.remoteDigest) {
+          appendActivityLog({ type: 'notify-skip', ...logBase, mode: 'every', reason: 'digest-unchanged', detail: 'Remote digest unchanged since last notification' });
+          continue;
+        }
       }
 
       const text = renderTelegramTemplate(template, row);
 
+      let sendOk = false;
       try {
         const result = await sendTelegramMessage(chatId, text);
         if (result.ok) {
           console.log(`[telegram] Sent notification to ${chatId} for ${row.container}`);
+          appendActivityLog({ type: 'notify-sent', ...logBase, mode: effectiveMode, remoteDigest: row.remoteDigest });
+          sendOk = true;
         } else {
           console.warn(`[telegram] Failed to send to ${chatId}:`, result.description);
+          appendActivityLog({ type: 'notify-fail', ...logBase, reason: 'api-error', detail: result.description });
         }
       } catch (e) {
         console.warn(`[telegram] Error sending to ${chatId}:`, e.message);
+        appendActivityLog({ type: 'notify-fail', ...logBase, reason: 'exception', detail: e.message });
       }
 
-      sent[key] = { digestKey, remoteDigest: row.remoteDigest, sentAt: new Date().toISOString() };
-      changed = true;
+      if (sendOk) {
+        sent[key] = { remoteDigest: row.remoteDigest, sentAt: new Date().toISOString() };
+        changed = true;
+      }
     }
   }
 
@@ -1121,7 +1165,9 @@ function finishUpdate(containerName, status) {
   const state = activeUpdates[containerName];
   if (!state) return;
   state.status = status;
-  saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt: new Date().toISOString(), status, log: state.log });
+  const finishedAt = new Date().toISOString();
+  saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt, status, log: state.log });
+  appendActivityLog({ type: 'update-install', container: containerName, image: state.image, status, startedAt: state.startedAt, finishedAt });
   broadcastStatus(containerName, status);
   if (status === 'done') {
     refreshCacheAfterUpdate(containerName, state.image);
