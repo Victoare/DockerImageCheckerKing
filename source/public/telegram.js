@@ -165,6 +165,7 @@ function testTelegramChat(idx) {
 // =========================================================================
 var cnotifyCache = {};
 var cnotifyChatsCache = {};
+var cnotifyHasOverride = {};
 var cnotifyCurrentIdx = null;
 var cnotifyCurrentContainer = null;
 var cnotifyGlobalRunningOnly = true;
@@ -196,6 +197,7 @@ function openContainerNotifyModal(container, idx) {
     var co = results[1] || { enabled: true, chats: {} };
     if (!co.chats) co.chats = {};
     cnotifyCache[container] = co;
+    cnotifyHasOverride[container] = hasOverride;
     cnotifyChatsCache[container] = tgConfig.chats || [];
     cnotifyGlobalRunningOnly = tgConfig.runningOnly !== false;
     renderContainerNotify(container, cnotifyChatsCache[container], co);
@@ -301,7 +303,7 @@ function updateCnotifyBtnState(idx, container) {
   }
 
   // Determine if customized (any override exists)
-  if (co) icon.classList.add('cnotify-customized');
+  if (cnotifyHasOverride[container]) icon.classList.add('cnotify-customized');
 }
 
 function cnotifySetNotifyWhenStopped(val) {
@@ -349,6 +351,7 @@ function cnotifySave() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(co)
   });
+  cnotifyHasOverride[container] = true;
   var resetBtn = document.getElementById('cnotifyResetBtn');
   if (resetBtn) resetBtn.style.display = '';
 }
@@ -393,6 +396,7 @@ function cnotifyResetToDefault() {
     .then(function (r) { return r.json(); })
     .then(function () {
       delete cnotifyCache[container];
+      cnotifyHasOverride[container] = false;
       var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
       if (row) { row.notifyCustomized = false; }
       if (idx !== null) updateCnotifyBtnState(idx, container);
