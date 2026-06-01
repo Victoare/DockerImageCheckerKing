@@ -168,7 +168,8 @@ function appendRow(row, idx) {
   }
 
   tr.innerHTML =
-    '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" onclick="toggleDetail(' + idx + ')">&#8250;</button></td>' +
+    '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" onclick="toggleDetail(' + idx + ')">&#8250;</button>' +
+      '<div class="row-progress" id="row-progress-' + idx + '"><div class="row-progress-fill" id="row-progress-fill-' + idx + '"></div></div></td>' +
     '<td class="col-state"><span class="state-dot-mobile ' + dotClass + '"></span><span class="state-badge ' + stateClass + '">' + esc(row.state) + '</span></td>' +
     '<td class="col-container"><span class="container-name">' + esc(row.container) + '</span></td>' +
     '<td class="col-image"><span class="image-name">' + esc(row.image) + '</span></td>' +

@@ -68,6 +68,34 @@ function setUpdateStatus(idx, status) {
   el.className = 'update-log-status update-status-' + status;
 }
 
+// Inline row progress bar (the seam between the result row and its detail row).
+function showRowProgress(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (!bar) return;
+  bar.classList.remove('error');
+  bar.classList.add('active');
+}
+
+function setRowProgress(idx, pct) {
+  var fill = document.getElementById('row-progress-fill-' + idx);
+  if (!fill) return;
+  fill.style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+}
+
+function hideRowProgress(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (!bar) return;
+  bar.classList.remove('active', 'error');
+  setRowProgress(idx, 0);
+}
+
+// Update failed: keep the bar visible and turn it red.
+function errorRowProgress(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (!bar) return;
+  bar.classList.add('active', 'error');
+}
+
 function setUpdateButtonState(idx, state) {
   var btn = document.getElementById('btn-update-main-' + idx);
   if (!btn) return;
@@ -93,11 +121,9 @@ function startUpdate(container, image, idx, event) {
 }
 
 function executeStartUpdate(container, image, idx) {
-  // Show detail row if not open
-  var detail = document.getElementById('detail-' + idx);
-  if (detail && detail.style.display !== 'table-row') {
-    toggleDetail(idx);
-  }
+  // Don't auto-open the detail row; show inline progress on the row seam instead.
+  showRowProgress(idx);
+  setRowProgress(idx, 0);
 
   // Clear old log
   var logEl = document.getElementById('update-log-' + idx);
@@ -135,21 +161,29 @@ function subscribeUpdateStream(container, idx) {
   src.addEventListener('log', function (e) {
     var line = JSON.parse(e.data);
     addUpdateLog(idx, line);
+    // Drive the inline row progress from the aggregate pull bar.
+    if (line.id === 'pull-overall' && line.bar) setRowProgress(idx, line.bar.pct);
   });
 
   src.addEventListener('status', function (e) {
     var data = JSON.parse(e.data);
     src.close();
     if (data.status === 'none') {
+      hideRowProgress(idx);
       return;
     }
     setUpdateStatus(idx, data.status);
     setUpdateButtonState(idx, 'idle');
 
     if (data.status === 'done') {
+      // Success: fill to 100% then fade the bar out.
+      setRowProgress(idx, 100);
+      setTimeout(function () { hideRowProgress(idx); }, 700);
       addLog('Update completed for ' + container, 'ok');
       updateRowToUpToDate(idx);
     } else {
+      // Failure: leave the bar in place, turned red.
+      errorRowProgress(idx);
       addLog('Update failed for ' + container, 'error');
     }
   });
@@ -181,6 +215,8 @@ function restoreUpdateLogs() {
           }
         }
         setUpdateStatus(idx, entry.status);
+        // A previously failed update keeps its red seam bar after reload.
+        if (entry.status === 'failed') errorRowProgress(idx);
       }
     })
     .catch(function () { });
@@ -197,9 +233,7 @@ function reconnectActiveUpdates() {
         if (statuses[container].status === 'running') {
           var idx = getIdxByContainer(container);
           if (idx === null) continue;
-          var detail = document.getElementById('detail-' + idx);
-          if (detail && detail.style.display !== 'table-row') toggleDetail(idx);
-
+          showRowProgress(idx);
           setUpdateButtonState(idx, 'running');
           setUpdateStatus(idx, 'running');
           subscribeUpdateStream(container, idx);

@@ -1046,7 +1046,40 @@
   }
 
   .result-row {
+    position: relative;
     animation: rowSlideIn 0.25s ease forwards;
+  }
+
+  /* Inline update progress, pinned to the seam between the row and its detail row */
+  .row-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--surface2);
+    overflow: hidden;
+    display: none;
+    z-index: 2;
+  }
+
+  .row-progress.active {
+    display: block;
+  }
+
+  .row-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #6366f1);
+    transition: width 0.3s ease;
+  }
+
+  .row-progress.error {
+    background: var(--red-dim);
+  }
+
+  .row-progress.error .row-progress-fill {
+    background: var(--red);
   }
 
   .log-panel {
