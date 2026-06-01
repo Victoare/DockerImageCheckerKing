@@ -17,12 +17,48 @@ function addUpdateLog(idx, line) {
   var wrapEl = document.getElementById('update-log-wrap-' + idx);
   if (wrapEl) wrapEl.style.display = '';
 
-  var div = document.createElement('div');
-  div.className = 'update-log-line' + (line.type ? ' ' + line.type : '');
-  var ts = line.time ? '[' + new Date(line.time).toLocaleTimeString() + '] ' : '';
-  div.textContent = ts + line.msg;
-  logEl.appendChild(div);
-  logEl.scrollTop = logEl.scrollHeight;
+  // Lines with an id update an existing row in place (e.g. live pull progress)
+  // instead of appending a new one each tick.
+  var div = line.id ? logEl.querySelector('[data-log-id="' + CSS.escape(line.id) + '"]') : null;
+  var created = !div;
+  if (!div) {
+    div = document.createElement('div');
+    if (line.id) div.setAttribute('data-log-id', line.id);
+    logEl.appendChild(div);
+  }
+
+  if (line.bar) {
+    div.className = 'update-log-bar' + (line.type ? ' ' + line.type : '');
+    renderBar(div, line.bar);
+  } else {
+    var ts = line.time ? '[' + new Date(line.time).toLocaleTimeString() + '] ' : '';
+    div.className = 'update-log-line' + (line.type ? ' ' + line.type : '');
+    div.textContent = ts + line.msg;
+  }
+
+  // Only auto-scroll when a new row appears; in-place bar updates must not yank
+  // the view to the bottom on every tick.
+  if (created) logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Render (or update in place) a progress-bar row: left label, fill track, right detail.
+function renderBar(div, bar) {
+  var left = div.querySelector('.bar-left');
+  var fill = div.querySelector('.bar-fill');
+  var right = div.querySelector('.bar-right');
+  if (!left) {
+    div.textContent = '';
+    left = document.createElement('span'); left.className = 'bar-left';
+    var track = document.createElement('div'); track.className = 'bar-track';
+    fill = document.createElement('div'); fill.className = 'bar-fill';
+    track.appendChild(fill);
+    right = document.createElement('span'); right.className = 'bar-right';
+    div.appendChild(left); div.appendChild(track); div.appendChild(right);
+  }
+  left.textContent = bar.left || '';
+  right.textContent = bar.right || '';
+  var pct = Math.max(0, Math.min(100, bar.pct || 0));
+  fill.style.width = pct + '%';
 }
 
 function setUpdateStatus(idx, status) {

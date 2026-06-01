@@ -1267,6 +1267,52 @@
     color: var(--text-dim);
   }
 
+  .update-log-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 1px 0;
+  }
+
+  .update-log-bar .bar-left {
+    flex: 0 0 32ch;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .update-log-bar .bar-track {
+    flex: 1 1 auto;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .update-log-bar .bar-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--accent), #6366f1);
+    transition: width 0.25s ease;
+  }
+
+  .update-log-bar .bar-right {
+    flex: 0 0 15ch;
+    text-align: right;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .update-log-bar.ok .bar-left {
+    color: var(--green);
+  }
+
+  .update-log-bar.ok .bar-fill {
+    background: var(--green);
+  }
+
   @media (max-width: 768px) {
     .update-action {
       padding-left: 16px;

@@ -1020,7 +1020,15 @@ app.get('/api/update-status', (_req, res) => {
 function broadcastLog(container, line) {
   const state = activeUpdates[container];
   if (!state) return;
-  state.log.push(line);
+  // Lines carrying an id update the existing entry in place (live progress),
+  // so the persisted log stays compact instead of growing one entry per tick.
+  if (line.id) {
+    const existing = state.log.find(l => l.id === line.id);
+    if (existing) { existing.msg = line.msg; existing.type = line.type; existing.time = line.time; existing.bar = line.bar; }
+    else state.log.push(line);
+  } else {
+    state.log.push(line);
+  }
   const payload = `event: log\ndata: ${JSON.stringify(line)}\n\n`;
   for (const client of state.clients) try { client.write(payload); } catch { /* disconnected */ }
 }
@@ -1067,7 +1075,7 @@ app.get('/api/update/:container/stream', (req, res) => {
 // CORE: "Clone & Swap" Update Logic (Watchtower style)
 // ---------------------------------------------------------------------------
 async function runUpdate(containerName, image) {
-  const log = (msg, type = 'info') => broadcastLog(containerName, { time: new Date().toISOString(), msg, type });
+  const log = (msg, type = 'info', id, bar) => broadcastLog(containerName, { time: new Date().toISOString(), msg, type, ...(id ? { id } : {}), ...(bar ? { bar } : {}) });
 
   try {
     // 1. PULL IMAGE
@@ -1078,13 +1086,101 @@ async function runUpdate(containerName, image) {
       let fromImage = (parsed.registry === 'docker.io') ? (parsed.repo.startsWith('library/') ? parsed.repo.substring(8) : parsed.repo) : `${parsed.registry}/${parsed.repo}`;
       log(`Pulling ${fromImage}:${parsed.tag} …`, 'info');
       let failed = false;
+      // The Docker pull stream emits one event per layer status change (often
+      // hundreds per second). Instead of one log line each, we keep per-layer
+      // state and render in-place updating progress bars: one aggregate bar
+      // ('pull-overall') plus one bar per layer ('pull-layer-<id>'). Each layer
+      // tracks its download and extract byte progress separately.
+      const fmtBytes = (n) => {
+        if (n == null) return '';
+        const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0, v = n;
+        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+        return (i === 0 ? v : (v >= 10 ? Math.round(v) : v.toFixed(1))) + u[i];
+      };
+      const shortId = (id) => id.length > 12 ? id.slice(0, 12) : id;
+      const layers = {};        // id -> { phase, dlCur, dlTot, exCur, exTot, terminal }
+      const seenMessages = new Set();
+      const lastEmit = {};      // log id -> last emitted pct (throttle)
+
+      const layerPct = (L) => {
+        if (L.phase === 'done' || L.phase === 'downloaded') return 100;
+        if (L.phase === 'extracting') return L.exTot ? Math.round(L.exCur / L.exTot * 100) : 0;
+        if (L.phase === 'downloading') return L.dlTot ? Math.round(L.dlCur / L.dlTot * 100) : 0;
+        return 0;
+      };
+      const layerLabel = (L) => ({
+        pending: 'Waiting', downloading: 'Downloading',
+        downloaded: 'Download complete', extracting: 'Extracting',
+        done: L.terminal || 'Pull complete'
+      })[L.phase] || '';
+      const layerRight = (L) => {
+        if (L.phase === 'downloading' && L.dlTot) return `${fmtBytes(L.dlCur)} / ${fmtBytes(L.dlTot)}`;
+        if (L.phase === 'extracting' && L.exTot) return `${Math.round(L.exCur / L.exTot * 100)}%`;
+        return '';
+      };
+      const emitLayer = (id) => {
+        const L = layers[id], key = 'pull-layer-' + id, pct = layerPct(L);
+        const sig = L.phase + ':' + pct;
+        if (lastEmit[key] === sig) return;
+        lastEmit[key] = sig;
+        log('', L.phase === 'done' ? 'ok' : 'info', key, { pct, left: `${shortId(id)}  ${layerLabel(L)}`, right: layerRight(L) });
+      };
+      const emitOverall = (force) => {
+        const ids = Object.keys(layers);
+        if (!ids.length) return;
+        let frac = 0, done = 0, sumCur = 0, sumTot = 0;
+        for (const id of ids) {
+          const L = layers[id];
+          if (L.phase === 'done') { frac += 1; done++; }
+          else if (L.phase === 'extracting') frac += 0.5 + 0.5 * (L.exTot ? L.exCur / L.exTot : 0);
+          else if (L.phase === 'downloaded') frac += 0.5;
+          else if (L.phase === 'downloading') frac += 0.5 * (L.dlTot ? L.dlCur / L.dlTot : 0);
+          if (L.dlTot) { sumCur += L.dlCur; sumTot += L.dlTot; }
+        }
+        const pct = Math.round(frac / ids.length * 100);
+        // Throttle on pct AND done: fractional credit can push pct to 100 while
+        // layers are still extracting, so keying on pct alone would freeze the
+        // "X / Y complete" label once that happens.
+        const sig = pct + ':' + done;
+        if (!force && lastEmit['pull-overall'] === sig) return;
+        lastEmit['pull-overall'] = sig;
+        const right = sumTot ? `${fmtBytes(sumCur)} / ${fmtBytes(sumTot)}` : '';
+        log('', done === ids.length ? 'ok' : 'info', 'pull-overall', { pct, left: `Layers  ${done} / ${ids.length} complete`, right });
+      };
+
       const pullCode = await dockerApi('POST', `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(parsed.tag)}`, {
         stream: (chunk) => {
-          if (chunk.error) { log(`Pull error: ${chunk.error}`, 'error'); failed = true; }
-          else if (chunk.status) log(chunk.id ? `[${chunk.id}] ${chunk.status}` : chunk.status, 'info');
+          if (chunk.error) { log(`Pull error: ${chunk.error}`, 'error'); failed = true; return; }
+          if (!chunk.status) return;
+          if (!chunk.id) {
+            // Non-layer status (e.g. "Pulling from repo", "Digest: …", "Status: …"); log once.
+            if (!seenMessages.has(chunk.status)) { seenMessages.add(chunk.status); log(chunk.status, 'info'); }
+            return;
+          }
+          const id = chunk.id;
+          const pd = chunk.progressDetail || {};
+          // Build on a copy and only commit to `layers` once we've handled the
+          // status — otherwise an unmapped status on a fresh id would register a
+          // phantom 'pending' layer that inflates the total but never completes.
+          const L = layers[id] || { phase: 'pending', dlCur: 0, dlTot: 0, exCur: 0, exTot: 0 };
+          switch (chunk.status) {
+            case 'Pulling fs layer': case 'Waiting': L.phase = 'pending'; break;
+            case 'Downloading': L.phase = 'downloading'; if (pd.current != null) L.dlCur = pd.current; if (pd.total) L.dlTot = pd.total; break;
+            case 'Verifying Checksum': L.phase = 'downloading'; break;
+            case 'Download complete': L.phase = 'downloaded'; if (L.dlTot) L.dlCur = L.dlTot; break;
+            case 'Extracting': L.phase = 'extracting'; if (pd.current != null) L.exCur = pd.current; if (pd.total) L.exTot = pd.total; break;
+            case 'Pull complete': L.phase = 'done'; L.terminal = 'Pull complete'; break;
+            case 'Already exists': L.phase = 'done'; L.terminal = 'Already exists'; break;
+            default: return; // unknown status — ignore, don't register a phantom layer
+          }
+          layers[id] = L;
+          emitOverall();   // emitted first so the aggregate bar stays on top
+          emitLayer(id);
         }
       });
       if (failed || pullCode !== 200) { log('Pull failed.', 'error'); finishUpdate(containerName, 'failed'); return; }
+      emitOverall(true);   // force a final flush so the aggregate bar always lands on 100%
       log('Pull complete.', 'ok');
     }
 
