@@ -73,7 +73,14 @@ function showRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
   if (!bar) return;
   bar.classList.remove('error');
-  bar.classList.add('active');
+  // 'waiting' shows a sweeping highlight until the first real progress arrives.
+  bar.classList.add('active', 'waiting');
+}
+
+// Stop the indeterminate sweep once we have real progress to show.
+function clearRowWaiting(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (bar) bar.classList.remove('waiting');
 }
 
 function setRowProgress(idx, pct) {
@@ -82,10 +89,42 @@ function setRowProgress(idx, pct) {
   fill.style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
 }
 
+// The pull is only part of an update; the bar fills to PULL_CAP during the pull
+// and the passive steps (inspect/stop/rename/create/start/delete) creep it the
+// rest of the way, so it reaches 100% only on success (or error).
+var ROW_PROGRESS_PULL_CAP = 80;
+var rowProgressState = {}; // idx -> { passive: bool, pct: number }
+
+function rowProgressFor(idx) {
+  return rowProgressState[idx] || (rowProgressState[idx] = { passive: false, pct: 0 });
+}
+
+// Drive the inline row bar from a streamed update log line.
+function advanceRowProgress(idx, line) {
+  var st = rowProgressFor(idx);
+  if (line.id === 'pull-overall' && line.bar) {
+    // Pull phase: scale the real pull pct into the 0..PULL_CAP band.
+    clearRowWaiting(idx);
+    st.pct = (line.bar.pct || 0) / 100 * ROW_PROGRESS_PULL_CAP;
+    setRowProgress(idx, st.pct);
+    // type 'ok' on the aggregate bar means every layer is done — pull is over.
+    if (line.type === 'ok') st.passive = true;
+    return;
+  }
+  if (line.bar) return; // per-layer bars don't drive the row bar
+  // Plain messages only creep the bar once the pull has finished. Each passive
+  // step nudges it asymptotically toward (but never quite to) 100%.
+  if (!st.passive) return;
+  clearRowWaiting(idx);
+  st.pct = st.pct + (97 - st.pct) * 0.35;
+  setRowProgress(idx, st.pct);
+}
+
 function hideRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
+  delete rowProgressState[idx];
   if (!bar) return;
-  bar.classList.remove('active', 'error');
+  bar.classList.remove('active', 'error', 'waiting');
   setRowProgress(idx, 0);
 }
 
@@ -93,6 +132,7 @@ function hideRowProgress(idx) {
 function errorRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
   if (!bar) return;
+  bar.classList.remove('waiting');
   bar.classList.add('active', 'error');
 }
 
@@ -123,6 +163,7 @@ function startUpdate(container, image, idx, event) {
 function executeStartUpdate(container, image, idx) {
   // Don't auto-open the detail row; show inline progress on the row seam instead.
   showRowProgress(idx);
+  rowProgressState[idx] = { passive: false, pct: 0 };
   setRowProgress(idx, 0);
 
   // Clear old log
@@ -161,8 +202,7 @@ function subscribeUpdateStream(container, idx) {
   src.addEventListener('log', function (e) {
     var line = JSON.parse(e.data);
     addUpdateLog(idx, line);
-    // Drive the inline row progress from the aggregate pull bar.
-    if (line.id === 'pull-overall' && line.bar) setRowProgress(idx, line.bar.pct);
+    advanceRowProgress(idx, line);
   });
 
   src.addEventListener('status', function (e) {
