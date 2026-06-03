@@ -1,5 +1,11 @@
 # Docker Image Checker King 🐳
 
+[![GitHub release](https://img.shields.io/github/v/release/Victoare/DockerImageCheckerKing?logo=github)](https://github.com/Victoare/DockerImageCheckerKing/releases/latest)
+[![Docker Hub](https://img.shields.io/docker/v/victoare/docker-image-checker-king?sort=date&label=docker%20hub&logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king)
+[![Image Size](https://img.shields.io/docker/image-size/victoare/docker-image-checker-king/latest?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king/tags)
+[![Docker Pulls](https://img.shields.io/docker/pulls/victoare/docker-image-checker-king?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king)
+[![License: MIT](https://img.shields.io/github/license/Victoare/DockerImageCheckerKing)](LICENSE)
+
 Web-based tool that checks your Docker containers for outdated images by comparing local digests against remote registry digests (therefore no unneccessry image pulls). Update notifications using Telegram. Supports one-click container updates via a "Clone & Swap" pattern.
 
 Responsive design, light/dark themes
