@@ -41,6 +41,10 @@ docker compose up -d
 
 Open **http://localhost:8080** in your browser.
 
+## BYOS - Bring your own security
+
+Managing users and access is out of scope by design. This is a homelab-grade tool with full access to your Docker socket and no authentication of its own. Run it behind your own security layer (reverse proxy, VPN, firewall) and never put it directly on the open internet.
+
 ## Build from source
 
 ```bash
