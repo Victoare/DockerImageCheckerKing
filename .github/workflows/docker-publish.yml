@@ -38,6 +38,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
