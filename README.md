@@ -96,7 +96,7 @@ Each chat can be set to one of two modes:
 
 | Mode | Behavior |
 |------|----------|
-| **Once** (default) | Sends one notification per outdated container; re-notifies when either the local or remote digest changes (e.g. after you update the container or a new version is pushed) |
+| **Once** (default) | Sends one notification per outdated container; re-notifies when the local digest changes (e.g. after you update the container) |
 | **Every new version** | Sends a notification each time a new remote image version is detected for an outdated container |
 
 ### Per-container overrides
