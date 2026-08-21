@@ -1209,6 +1209,37 @@ async function runUpdate(containerName, image) {
     const config = { ...oldInfo.Config };
     config.Image = image;
 
+    // Docker bakes the image's labels into the container config at create time,
+    // so a plain clone would freeze the OLD image's labels (e.g. a stale
+    // org.opencontainers.image.version) onto the new container. Drop every label
+    // whose value is identical to the old image's — those are purely inherited,
+    // and the new image will supply its own. Labels the user set explicitly
+    // (compose labels, reverse-proxy rules, or an intentional override with a
+    // different value) are kept untouched.
+    if (config.Labels && oldInfo.Image) {
+      try {
+        const oldImg = await dockerApi('GET', `/images/${encodeURIComponent(oldInfo.Image)}/json`);
+        const imgLabels = (oldImg.Config && oldImg.Config.Labels) || null;
+        if (imgLabels) {
+          const labels = { ...config.Labels };
+          let dropped = 0;
+          // Build-metadata namespaces are always image-provided provenance; a
+          // container-level override of them is never intentional, and a value
+          // mismatch there just means the label got frozen by an *earlier* swap.
+          const isProvenance = (k) => k.startsWith('org.opencontainers.image.')
+            || k.startsWith('org.label-schema.');
+          for (const k of Object.keys(imgLabels)) {
+            if (labels[k] === imgLabels[k] || isProvenance(k)) { delete labels[k]; dropped++; }
+          }
+          for (const k of Object.keys(labels)) {
+            if (isProvenance(k)) { delete labels[k]; dropped++; }
+          }
+          if (dropped) log(`Dropped ${dropped} label(s) inherited from the old image, the new image provides its own.`, 'info');
+          config.Labels = labels;
+        }
+      } catch (e) { log(`Could not read old image labels (${e.message}), cloning them as-is.`, 'warn'); }
+    }
+
     const createBody = {
       ...config,
       HostConfig: oldInfo.HostConfig,
@@ -1278,8 +1309,8 @@ async function refreshCacheAfterUpdate(containerName, image) {
     if (!cache || !cache.results) return;
     const row = cache.results.find(r => r.container === containerName);
     if (!row) return;
-    // Re-inspect the new container to get fresh local digest
-    let localDigest = null;
+    // Re-inspect the pulled image to get fresh local digest + OCI version label
+    let localDigest = null, localVersion = null;
     try {
       const inspect = await dockerApi('GET', `/images/${encodeURIComponent(image)}/json`);
       if (inspect.RepoDigests && inspect.RepoDigests.length > 0) {
@@ -1288,12 +1319,33 @@ async function refreshCacheAfterUpdate(containerName, image) {
           if (m) { localDigest = m[1]; break; }
         }
       }
-    } catch {}
+      const labels = (inspect.Config && inspect.Config.Labels) || null;
+      if (labels) {
+        localVersion = labels['org.opencontainers.image.version']
+          || labels['org.label-schema.version']
+          || labels['version']
+          || null;
+      }
+    } catch (e) { console.warn('[cache] Could not inspect image after update:', e.message); }
     if (localDigest) {
       row.localDigest = localDigest;
       row.remoteDigest = localDigest;
     }
+    // The container now runs exactly this image, so the "Detected" column must
+    // show its label — otherwise the pre-update value lingers until the next check.
+    row.localVersion = localVersion || '-';
+    if (localDigest) row.remoteVersion = row.localVersion;
     row.result = 'UpToDate';
+    // Refresh state/status too: the row otherwise keeps the old container's uptime.
+    try {
+      const ctr = await dockerApi('GET', `/containers/${encodeURIComponent(containerName)}/json`);
+      if (ctr && ctr.State) {
+        row.state = ctr.State.Status || row.state;
+        row.status = ctr.State.Running
+          ? 'Up (just updated)'
+          : (ctr.State.Status ? ctr.State.Status.charAt(0).toUpperCase() + ctr.State.Status.slice(1) : row.status);
+      }
+    } catch (e) { console.warn('[cache] Could not inspect container after update:', e.message); }
     cache.timestamp = new Date().toISOString();
     fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
   } catch (e) { console.warn('[cache] Failed to refresh after update:', e.message); }
