@@ -6,6 +6,7 @@ const { resultStore, appendActivityLog, saveUpdateLog } = require('./store');
 const { dockerApi } = require('./docker');
 const { parseImageReference, pickVersionLabel } = require('./registry');
 const { clearTelegramSentForContainer } = require('./telegram');
+const { recordUpdate } = require('./metrics');
 
 // ---------------------------------------------------------------------------
 // In-memory state for active updates
@@ -261,6 +262,7 @@ async function finishUpdate(containerName, status) {
   const finishedAt = new Date().toISOString();
   saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt, status, log: state.log });
   appendActivityLog({ type: 'update-install', container: containerName, image: state.image, status, startedAt: state.startedAt, finishedAt });
+  recordUpdate(status);
   // Refresh the cache BEFORE broadcasting: on 'done' the UI immediately reads
   // /api/last-result back, so the fresh digest/version must already be in there
   // — otherwise it would render the pre-update values.

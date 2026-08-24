@@ -125,6 +125,38 @@ Click the bell icon (🔔) on any container row to:
 | `AUTO_CHECK_MINUTES` | `360` | Auto-check interval when rate limits are low |
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token for notifications (optional) |
 
+## Metrics
+
+A Prometheus-compatible endpoint is exposed at `/metrics`. It is read-only: it renders the result of the last check from the cache and **never contacts a registry**, so scraping it costs nothing in registry rate limit.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `docker_image_checker_build_info` | gauge | `version` | Always 1; carries the build version |
+| `docker_image_checker_containers` | gauge | `result` | Containers per result (`UpToDate`, `Outdated`, `Unknown`, `Pinned`, `NoLocalDigest`) |
+| `docker_image_checker_container_outdated` | gauge | `container`, `image`, `registry` | 1 when a newer image is available |
+| `docker_image_checker_last_check_timestamp_seconds` | gauge | – | Unix time of the last completed check |
+| `docker_image_checker_last_check_duration_seconds` | gauge | – | Duration of the last check in this process |
+| `docker_image_checker_registry_rate_limit_remaining` | gauge | `registry` | Remaining pulls reported by the registry |
+| `docker_image_checker_registry_rate_limit_limit` | gauge | `registry` | Pull limit reported by the registry |
+| `docker_image_checker_updates_total` | counter | `result` | Container updates run since start (`success`, `failed`) |
+
+```yaml
+scrape_configs:
+  - job_name: docker-image-checker-king
+    scrape_interval: 5m
+    static_configs:
+      - targets: ['docker-image-checker-king:8080']
+```
+
+A long scrape interval is enough — the values only change when a check runs. The most useful alert is on `last_check_timestamp_seconds`: it stops advancing when the checker has stopped checking, which is otherwise invisible.
+
+```yaml
+- alert: ImageCheckerStalled
+  expr: time() - docker_image_checker_last_check_timestamp_seconds > 86400
+  annotations:
+    summary: No image check completed in the last 24 hours
+```
+
 ## Architecture
 
 ```

@@ -12,6 +12,7 @@ const {
   loadContainerNotify, saveContainerNotify, getNotifyInfo
 } = require('./telegram');
 const { activeUpdates, runUpdate } = require('./updater');
+const { renderMetrics, recordCheckDuration } = require('./metrics');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -136,6 +137,7 @@ function runCheckExclusive(includeStopped, handlers = {}) {
     }
   };
 
+  const startedAt = Date.now();
   run.promise = (async () => {
     try {
       const result = await runCheck(includeStopped, {
@@ -146,6 +148,7 @@ function runCheckExclusive(includeStopped, handlers = {}) {
       // Notifications belong to the run, not to whoever asked for it — sending
       // them per caller would deliver one message per attached client.
       sendTelegramNotifications(result.results).catch(e => console.warn('[telegram] Notification error:', e.message));
+      recordCheckDuration((Date.now() - startedAt) / 1000);
       return result;
     } finally {
       checkInFlight = null;
@@ -395,6 +398,12 @@ app.get('/api/last-result', (_req, res) => {
   // would write the notify flags back to disk on the next save.
   const results = (cache.results || []).map(row => ({ ...row, ...getNotifyInfo(row.container, row.state) }));
   res.json({ ...cache, results });
+});
+
+// Prometheus scrape target. Reads the cache only — see metrics.js.
+app.get('/metrics', (_req, res) => {
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  res.send(renderMetrics());
 });
 
 app.get('/api/version', (_req, res) => res.json({ version: process.env.BUILD_VERSION || 'dev' }));
