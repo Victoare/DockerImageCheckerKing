@@ -260,7 +260,21 @@ function httpsRequest(method, url, headers = {}, maxRedirects = 5) {
     };
     const req = https.request(options, (res) => {
       if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
-        return httpsRequest(method, res.headers.location, headers, maxRedirects - 1).then(resolve).catch(reject);
+        res.resume(); // drain, we only need the Location header
+        // Location may be relative, so resolve it against the current URL.
+        const target = new URL(res.headers.location, url);
+        // Registry blob downloads redirect to a CDN or object store. Our bearer
+        // token is scoped to the registry, so carrying it to a different host
+        // would hand a credential to a third party — and some CDNs reject
+        // requests that arrive with one.
+        let nextHeaders = headers;
+        if (target.host !== parsed.host) {
+          nextHeaders = {};
+          for (const [k, v] of Object.entries(headers)) {
+            if (!/^authorization$/i.test(k)) nextHeaders[k] = v;
+          }
+        }
+        return httpsRequest(method, target.href, nextHeaders, maxRedirects - 1).then(resolve).catch(reject);
       }
       if (method === 'HEAD') {
         res.resume();
