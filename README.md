@@ -29,9 +29,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
     environment:
-      - AUTO_CHECK_FAST_MINUTES=60
-      - AUTO_CHECK_MINUTES=360
-      - TELEGRAM_BOT_TOKEN=123456:ABC-DEF... 
+      - AUTO_CHECK_FAST_MINUTES=60           # Auto-check interval when rate limits are healthy
+      - AUTO_CHECK_MINUTES=360               # Auto-check interval when rate limits are low
+      - TELEGRAM_BOT_TOKEN=123456:ABC-DEF... # Telegram bot token for notifications (optional)
     restart: unless-stopped
 ```
 
@@ -106,7 +106,7 @@ Click the bell icon (🔔) on any container row to:
 - Override the notification mode per chat
 - Fine-tune which chats receive alerts for specific containers
 
-## Authentication
+## Registry authentication
 
 | Registry | Auth Method |
 |---|---|
