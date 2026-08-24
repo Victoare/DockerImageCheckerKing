@@ -7,21 +7,55 @@ const crypto = require('crypto');
 const { URL } = require('url');
 
 // ---------------------------------------------------------------------------
-// TTL file cache — keeps parsed JSON in memory for `ttl` ms after last access
+// JSON store — every persisted file goes through one of these.
+//
+// Writes land in a temp file that is then renamed over the target. rename() is
+// atomic, so a crash mid-write can no longer leave a half-written config
+// behind. Reads are kept in memory for `ttl` ms after last access, and a file
+// that exists but cannot be parsed is reported instead of silently turning
+// into an empty object — that failure mode used to lose settings in silence.
 // ---------------------------------------------------------------------------
-function createFileCache(filePath, fallback, ttl = 300000) {
+function createJsonStore(filePath, fallback, ttl = 300000) {
+  const name = path.basename(filePath);
   let data = null, timer = null;
+
   function touch() {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { data = null; timer = null; }, ttl);
   }
+
   return {
     load() {
       if (data !== null) { touch(); return data; }
-      try { data = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { data = fallback(); }
+      try {
+        data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      } catch (e) {
+        if (e.code !== 'ENOENT') {
+          console.warn(`[store] ${name} could not be read (${e.message}) — falling back to the default.`);
+        }
+        data = fallback();
+      }
       touch();
       return data;
     },
+
+    // Persists `value` and keeps it as the cached copy. Returns false if the
+    // write failed, in which case the file on disk is left untouched.
+    save(value) {
+      const tmp = `${filePath}.tmp`;
+      try {
+        fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+        fs.renameSync(tmp, filePath);
+      } catch (e) {
+        console.warn(`[store] Failed to save ${name}: ${e.message}`);
+        try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+        return false;
+      }
+      data = value;
+      touch();
+      return true;
+    },
+
     invalidate() { data = null; if (timer) { clearTimeout(timer); timer = null; } }
   };
 }
@@ -66,6 +100,19 @@ try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { console.warn('[
 app.use(express.json());
 
 // ---------------------------------------------------------------------------
+// Persisted state — all of it lives in DATA_DIR, all of it goes through a store
+// ---------------------------------------------------------------------------
+const RATE_LIMIT_FILE = path.join(DATA_DIR, 'rate-limits.json');
+
+const resultStore = createJsonStore(CACHE_FILE, () => null);
+const rateLimitStore = createJsonStore(RATE_LIMIT_FILE, () => ({}));
+const updateLogsStore = createJsonStore(UPDATE_LOGS_FILE, () => ({}));
+const telegramConfigStore = createJsonStore(TELEGRAM_CONFIG_FILE, () => ({ chats: [] }));
+const telegramSentStore = createJsonStore(TELEGRAM_SENT_FILE, () => ({}));
+const telegramTemplateStore = createJsonStore(TELEGRAM_TEMPLATE_FILE, () => ({ template: DEFAULT_TELEGRAM_TEMPLATE }));
+const containerNotifyStore = createJsonStore(CONTAINER_NOTIFY_FILE, () => ({}));
+
+// ---------------------------------------------------------------------------
 // In-memory state for active updates
 // { [containerName]: { image, status: 'running'|'done'|'failed', log: [{time,msg,type}], clients: [res] } }
 // ---------------------------------------------------------------------------
@@ -82,9 +129,6 @@ function appendActivityLog(entry) {
 // ---------------------------------------------------------------------------
 // Registry rate-limit tracking
 // ---------------------------------------------------------------------------
-const RATE_LIMIT_FILE = path.join(DATA_DIR, 'rate-limits.json');
-let rateLimits = {};
-try { rateLimits = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8')); } catch { /* no file yet */ }
 
 function updateRateLimit(registry, responseHeaders) {
   const limit = responseHeaders['ratelimit-limit'] || responseHeaders['x-ratelimit-limit'];
@@ -100,33 +144,26 @@ function updateRateLimit(registry, responseHeaders) {
   }
   if (!limit && !remaining) return;
   const parse = (val) => { if (!val) return null; const m = val.match(/^(\d+)/); return m ? parseInt(m[1], 10) : null; };
+  const rateLimits = rateLimitStore.load();
   rateLimits[registry] = {
     limit: parse(limit),
     remaining: parse(remaining),
     updatedAt: new Date().toISOString()
   };
-  try { fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify(rateLimits, null, 2)); } catch (e) { console.warn('[rate-limit] Failed to save:', e.message); }
+  rateLimitStore.save(rateLimits);
 }
 
 // ---------------------------------------------------------------------------
 // Persistent update logs helpers (one entry per container)
 // ---------------------------------------------------------------------------
 function loadUpdateLogs() {
-  try {
-    return JSON.parse(fs.readFileSync(UPDATE_LOGS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+  return updateLogsStore.load();
 }
 
 function saveUpdateLog(container, entry) {
   const logs = loadUpdateLogs();
   logs[container] = entry;
-  try {
-    fs.writeFileSync(UPDATE_LOGS_FILE, JSON.stringify(logs, null, 2));
-  } catch (e) {
-    console.error('[update-log] Failed to save:', e.message);
-  }
+  updateLogsStore.save(logs);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +564,7 @@ async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) 
   let prevDigests = {};
   const knownByImage = {};
   try {
-    const prev = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    const prev = resultStore.load();
     if (prev && prev.results) {
       for (const r of prev.results) {
         prevDigests[r.container] = r.remoteDigest;
@@ -597,7 +634,7 @@ async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) 
     results.push(row); if (onResult) onResult(row);
   }
   const timestamp = new Date().toISOString();
-  try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp, results }, null, 2)); } catch (e) { console.warn('[check] Failed to save cache:', e.message); }
+  resultStore.save({ timestamp, results });
   const outdatedResults = results.filter(r => r.result === 'Outdated');
   appendActivityLog({ type: 'check', checked: results.length, outdated: outdatedResults.length });
   for (const r of outdatedResults) {
@@ -677,16 +714,10 @@ app.get('/api/check', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Telegram notification helpers
 // ---------------------------------------------------------------------------
-const telegramConfigCache = createFileCache(TELEGRAM_CONFIG_FILE, () => ({ chats: [] }));
-function loadTelegramConfig() { return telegramConfigCache.load(); }
-function saveTelegramConfig(config) {
-  try { fs.writeFileSync(TELEGRAM_CONFIG_FILE, JSON.stringify(config, null, 2)); } catch (e) { console.warn('[telegram] Failed to save config:', e.message); }
-  telegramConfigCache.invalidate();
-}
+function loadTelegramConfig() { return telegramConfigStore.load(); }
+function saveTelegramConfig(config) { telegramConfigStore.save(config); }
 
-function loadTelegramSent() {
-  try { return JSON.parse(fs.readFileSync(TELEGRAM_SENT_FILE, 'utf8')); } catch { return {}; }
-}
+function loadTelegramSent() { return telegramSentStore.load(); }
 
 function clearTelegramSentForContainer(containerName) {
   const sent = loadTelegramSent();
@@ -697,9 +728,7 @@ function clearTelegramSentForContainer(containerName) {
   if (changed) saveTelegramSent(sent);
 }
 
-function saveTelegramSent(sent) {
-  try { fs.writeFileSync(TELEGRAM_SENT_FILE, JSON.stringify(sent, null, 2)); } catch (e) { console.warn('[telegram] Failed to save sent state:', e.message); }
-}
+function saveTelegramSent(sent) { telegramSentStore.save(sent); }
 
 async function sendTelegramMessage(chatId, text) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -727,15 +756,11 @@ async function sendTelegramMessage(chatId, text) {
 }
 
 function loadTelegramTemplate() {
-  try {
-    const data = JSON.parse(fs.readFileSync(TELEGRAM_TEMPLATE_FILE, 'utf8'));
-    return data && data.template ? data.template : DEFAULT_TELEGRAM_TEMPLATE;
-  } catch { return DEFAULT_TELEGRAM_TEMPLATE; }
+  const data = telegramTemplateStore.load();
+  return data && data.template ? data.template : DEFAULT_TELEGRAM_TEMPLATE;
 }
 
-function saveTelegramTemplate(template) {
-  try { fs.writeFileSync(TELEGRAM_TEMPLATE_FILE, JSON.stringify({ template }, null, 2)); } catch (e) { console.warn('[telegram] Failed to save template:', e.message); }
-}
+function saveTelegramTemplate(template) { telegramTemplateStore.save({ template }); }
 
 function renderTelegramTemplate(template, row) {
   const tokens = {
@@ -851,8 +876,7 @@ async function sendTelegramNotifications(results) {
 
 // Container-level notification overrides
 // { "container-name": { enabled: false, chats: { "chatId": { enabled: true, mode: "once" } } } }
-const containerNotifyCache = createFileCache(CONTAINER_NOTIFY_FILE, () => ({}));
-function loadContainerNotify() { return containerNotifyCache.load(); }
+function loadContainerNotify() { return containerNotifyStore.load(); }
 
 // Compute bell icon state for a container: "default" | "disabled" | "customized"
 // Takes container state into account: if global "runningOnly" is on and the
@@ -885,21 +909,20 @@ function getNotifyInfo(containerName, state) {
   return { notifyActive: active, notifyCustomized: customized };
 }
 
-function saveContainerNotify(data) {
-  try { fs.writeFileSync(CONTAINER_NOTIFY_FILE, JSON.stringify(data, null, 2)); } catch (e) { console.warn('[notify] Failed to save:', e.message); }
-  containerNotifyCache.invalidate();
-}
+function saveContainerNotify(data) { containerNotifyStore.save(data); }
 
 // Telegram API endpoints
 app.get('/api/telegram/config', (_req, res) => {
-  const config = loadTelegramConfig();
-  config.hasToken = !!TELEGRAM_BOT_TOKEN;
-  res.json(config);
+  // hasToken is derived, not stored — copy so it does not end up in the file.
+  res.json({ ...loadTelegramConfig(), hasToken: !!TELEGRAM_BOT_TOKEN });
 });
 
 app.post('/api/telegram/config', (req, res) => {
   const config = req.body;
   if (!config || !Array.isArray(config.chats)) return res.status(400).json({ error: 'Invalid config' });
+  // The client echoes back the derived token flags; they are not config.
+  delete config.hasToken;
+  delete config._hasToken;
   saveTelegramConfig(config);
   res.json({ ok: true });
 });
@@ -938,7 +961,7 @@ app.post('/api/telegram/template/send', async (req, res) => {
   let row;
   if (container) {
     try {
-      const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+      const cache = resultStore.load();
       row = cache && cache.results && cache.results.find(r => r.container === container);
     } catch {}
   }
@@ -1043,7 +1066,7 @@ let nextAutoCheckTime = null;
 let autoCheckTimer = null;
 
 function getAutoCheckInterval() {
-  const dh = rateLimits['docker.io'];
+  const dh = rateLimitStore.load()['docker.io'];
   if (dh && dh.limit && dh.remaining !== null) {
     const pct = dh.remaining / dh.limit;
     if (pct >= 0.8) {
@@ -1063,7 +1086,7 @@ function scheduleNextAutoCheck() {
 
   let lastCheckTime = null;
   try {
-    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    const cache = resultStore.load();
     if (cache && cache.timestamp) lastCheckTime = new Date(cache.timestamp).getTime();
   } catch { /* no cache yet */ }
 
@@ -1098,17 +1121,16 @@ app.get('/api/next-check', (_req, res) => {
 });
 
 app.get('/api/rate-limits', (_req, res) => {
-  res.json(rateLimits);
+  res.json(rateLimitStore.load());
 });
 
 app.get('/api/last-result', (_req, res) => {
-  try {
-    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    if (cache && cache.results) {
-      for (const row of cache.results) Object.assign(row, getNotifyInfo(row.container, row.state));
-    }
-    res.json(cache);
-  } catch { res.json(null); }
+  const cache = resultStore.load();
+  if (!cache) return res.json(null);
+  // Copy the rows: the store hands out its cached object, and mutating it here
+  // would write the notify flags back to disk on the next save.
+  const results = (cache.results || []).map(row => ({ ...row, ...getNotifyInfo(row.container, row.state) }));
+  res.json({ ...cache, results });
 });
 
 app.get('/api/version', (_req, res) => res.json({ version: process.env.BUILD_VERSION || 'dev' }));
@@ -1412,7 +1434,7 @@ async function finishUpdate(containerName, status) {
 
 async function refreshCacheAfterUpdate(containerName, image) {
   try {
-    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    const cache = resultStore.load();
     if (!cache || !cache.results) return;
     const row = cache.results.find(r => r.container === containerName);
     if (!row) return;
@@ -1448,7 +1470,7 @@ async function refreshCacheAfterUpdate(containerName, image) {
       }
     } catch (e) { console.warn('[cache] Could not inspect container after update:', e.message); }
     cache.timestamp = new Date().toISOString();
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+    resultStore.save(cache);
   } catch (e) { console.warn('[cache] Failed to refresh after update:', e.message); }
 }
 
