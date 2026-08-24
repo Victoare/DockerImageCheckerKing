@@ -220,8 +220,7 @@ function subscribeUpdateStream(container, idx) {
       setRowProgress(idx, 100);
       setTimeout(function () { hideRowProgress(idx); }, 700);
       addLog('Update completed for ' + container, 'ok');
-      updateRowToUpToDate(idx);
-      refreshRowFromCache(container, idx);
+      refreshRowAfterUpdate(container, idx);
     } else {
       // Failure: leave the bar in place, turned red.
       errorRowProgress(idx);
@@ -284,11 +283,11 @@ function reconnectActiveUpdates() {
     .catch(function (e) { });
 }
 
-function updateRowToUpToDate(idx) {
-  var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
-  if (!row) return;
-
-  row.result = 'UpToDate';
+// Bring one row up to date after its container was updated: repaint the status
+// badge and drop the Update button, then reload the values the server refreshed
+// in the cache (digest, version, state). Only this row's cells are touched, so
+// an expanded detail panel and its update log stay where they are.
+function refreshRowAfterUpdate(container, idx) {
   var tr = document.querySelector('tr.result-row[data-idx="' + idx + '"]');
   if (tr) {
     tr.dataset.result = 'UpToDate';
@@ -308,14 +307,19 @@ function updateRowToUpToDate(idx) {
   }
   var detailRow = document.getElementById('detail-' + idx);
   if (detailRow) detailRow.classList.remove('row-outdated');
+
+  var row = rowByKey(idx);
+  if (row) row.result = 'UpToDate';
   updateStats();
+
+  refreshRowValues(container, idx);
 }
 
 // After a successful update the server has already refreshed the cache (digest,
 // version, state) — read it back so a UI left open does not keep showing the old
 // values until the next full scan. Only the affected row's cells are rewritten,
 // so an expanded detail panel and its update log stay in place.
-function refreshRowFromCache(container, idx) {
+function refreshRowValues(container, idx) {
   fetch('/api/last-result')
     .then(function (r) { return r.json(); })
     .then(function (cache) {
@@ -326,7 +330,7 @@ function refreshRowFromCache(container, idx) {
       }
       if (!fresh) return;
 
-      var row = APP.results[idx - 1];
+      var row = rowByKey(idx);
       if (!row || row.container !== container) return;
 
       row.localVersion = fresh.localVersion;

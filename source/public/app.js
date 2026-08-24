@@ -42,6 +42,24 @@ var APP = {
   modalCallback: null
 };
 
+// Every row gets a key that stays with it for as long as the row exists. It is
+// deliberately NOT the array position: the table is re-sorted and re-rendered
+// while updates are running, and a position-derived key silently pointed the
+// DOM ids (and the update progress state) at a different container.
+var nextRowKey = 1;
+
+function rowKey(row) {
+  if (!row.__key) row.__key = nextRowKey++;
+  return row.__key;
+}
+
+function rowByKey(key) {
+  for (var i = 0; i < APP.results.length; i++) {
+    if (String(APP.results[i].__key) === String(key)) return APP.results[i];
+  }
+  return null;
+}
+
 // =========================================================================
 // Utility
 // =========================================================================

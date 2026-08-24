@@ -313,7 +313,7 @@ function cnotifySetNotifyWhenStopped(val) {
   if (!co) return;
   co.notifyWhenStopped = !!val;
   renderContainerNotify(container, cnotifyChatsCache[container] || [], co);
-  var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+  var row = rowByKey(idx);
   if (row) {
     row.notifyCustomized = true;
     if (co.enabled === false) row.notifyActive = false;
@@ -328,7 +328,7 @@ function loadAllCnotifyStates() {
   // Refresh bell icons from APP.results after table rebuild
   for (var i = 0; i < APP.results.length; i++) {
     var row = APP.results[i];
-    var idx = i + 1;
+    var idx = rowKey(row);
     var ni = document.getElementById('cnotify-icon-' + idx);
     var nb = document.getElementById('cnotify-btn-' + idx);
     if (!ni) continue;
@@ -360,7 +360,7 @@ function cnotifySetEnabled(val) {
   var container = cnotifyCurrentContainer;
   var idx = cnotifyCurrentIdx;
   cnotifyCache[container].enabled = val;
-  var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+  var row = rowByKey(idx);
   if (row) { row.notifyCustomized = true; row.notifyActive = !!val; }
   var chatsEl = document.getElementById('cnotify-chats-modal');
   if (chatsEl) chatsEl.style.display = val ? '' : 'none';
@@ -397,7 +397,7 @@ function cnotifyResetToDefault() {
     .then(function () {
       delete cnotifyCache[container];
       cnotifyHasOverride[container] = false;
-      var row = APP.results.find(function (r, i) { return (i + 1) == idx; });
+      var row = rowByKey(idx);
       if (row) { row.notifyCustomized = false; }
       if (idx !== null) updateCnotifyBtnState(idx, container);
       closeCnotifyModal();

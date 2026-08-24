@@ -37,7 +37,7 @@ function startCheck() {
   evtSource.addEventListener('result', function (e) {
     var row = JSON.parse(e.data);
     APP.results.push(row);
-    appendRow(row, APP.results.length);
+    appendRow(row);
     updateStats();
   });
 
@@ -113,7 +113,7 @@ function sortResults() {
 
 function renderAllRows() {
   document.getElementById('resultsBody').innerHTML = '';
-  for (var i = 0; i < APP.results.length; i++) appendRow(APP.results[i], i + 1);
+  for (var i = 0; i < APP.results.length; i++) appendRow(APP.results[i]);
   updateStats();
   filterRows(APP.filter);
 }
@@ -135,7 +135,8 @@ function updateStats() {
   document.getElementById('statTotal').textContent = APP.results.length;
 }
 
-function appendRow(row, idx) {
+function appendRow(row) {
+  var idx = rowKey(row);
   var tbody = document.getElementById('resultsBody');
   var stateClass = row.state === 'running' ? 'state-running'
     : row.state === 'exited' ? 'state-exited'
@@ -163,12 +164,12 @@ function appendRow(row, idx) {
   var updateBtnMain = '';
   if (row.result === 'Outdated') {
     updateBtnMain =
-      '<button class="btn-update-inline" id="btn-update-main-' + idx + '" onclick="startUpdate(\'' + esc(row.container) + '\', \'' + esc(row.image) + '\', ' + idx + ', event)">' +
+      '<button class="btn-update-inline" id="btn-update-main-' + idx + '" data-action="update">' +
       '<span class="update-spinner"></span><span class="update-btn-icon">⬆</span><span class="update-text"> Update</span></button>';
   }
 
   tr.innerHTML =
-    '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" onclick="toggleDetail(' + idx + ')">&#8250;</button>' +
+    '<td class="col-expand"><button class="expand-btn" id="expand-' + idx + '" data-action="toggle">&#8250;</button>' +
       '<div class="row-progress" id="row-progress-' + idx + '"><div class="row-progress-fill" id="row-progress-fill-' + idx + '"></div></div></td>' +
     '<td class="col-state"><span class="state-dot-mobile ' + dotClass + '" id="cell-statedot-' + idx + '"></span><span class="state-badge ' + stateClass + '" id="cell-state-' + idx + '">' + esc(row.state) + '</span></td>' +
     '<td class="col-container"><span class="container-name">' + esc(row.container) + '</span></td>' +
@@ -177,7 +178,7 @@ function appendRow(row, idx) {
     '<td class="col-version"><span id="cell-remotever-' + idx + '" style="font-family:\'JetBrains Mono\',monospace;font-size:11px;">' + esc(row.remoteVersion || '-') + '</span></td>' +
     '<td class="col-status"><span class="result-badge result-' + row.result + '"><span class="dot"></span><span class="result-full">' + (resultLabels[row.result] || row.result) + '</span><span class="result-short">' + (resultShort[row.result] || '?') + '</span></span></td>' +
     '<td class="col-actions">' + updateBtnMain + '</td>' +
-    '<td class="col-notify"><button class="cnotify-bell-btn" id="cnotify-btn-' + idx + '" onclick="openContainerNotifyModal(\'' + esc(row.container) + '\', ' + idx + ')" title="Notification settings">' +
+    '<td class="col-notify"><button class="cnotify-bell-btn" id="cnotify-btn-' + idx + '" data-action="notify" title="Notification settings">' +
       '<span class="cnotify-icon" id="cnotify-icon-' + idx + '">' +
         '<svg class="cnotify-bell" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' +
         '<svg class="cnotify-bell-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M1 1l22 22"/></svg>' +
@@ -202,6 +203,11 @@ function appendRow(row, idx) {
   var dr = document.createElement('tr');
   dr.className = 'detail-row';
   dr.id = 'detail-' + idx;
+  // Assigned, never interpolated into HTML: whatever the daemon reports as a
+  // container name or image cannot break out of an attribute this way.
+  dr.dataset.idx = idx;
+  dr.dataset.container = row.container;
+  dr.dataset.image = row.image;
   if (row.result === 'Outdated') dr.classList.add('row-outdated');
   if (row.result === 'Unknown') dr.classList.add('row-unknown');
 
@@ -210,7 +216,7 @@ function appendRow(row, idx) {
   if (row.result === 'Outdated') {
     updateBtnHtml =
       '<div class="update-action">' +
-      '<button class="btn-update" id="btn-update-' + idx + '" onclick="startUpdate(\'' + esc(row.container) + '\', \'' + esc(row.image) + '\', ' + idx + ')">' +
+      '<button class="btn-update" id="btn-update-' + idx + '" data-action="update">' +
       '<span class="update-spinner"></span>' +
       '<span class="update-btn-icon">⬆</span> Update' +
       '</button>' +
@@ -237,6 +243,21 @@ function appendRow(row, idx) {
     '</td>';
   tbody.appendChild(dr);
 }
+
+// One listener for the whole table instead of an onclick attribute per button.
+// Besides removing the string-quoting hazard, this keeps working for rows
+// rendered later on.
+document.getElementById('resultsBody').addEventListener('click', function (e) {
+  var btn = e.target.closest ? e.target.closest('[data-action]') : null;
+  if (!btn) return;
+  var tr = btn.closest('tr');
+  if (!tr) return;
+  var idx = tr.dataset.idx;
+
+  if (btn.dataset.action === 'toggle') toggleDetail(idx);
+  else if (btn.dataset.action === 'update') startUpdate(tr.dataset.container, tr.dataset.image, idx, e);
+  else if (btn.dataset.action === 'notify') openContainerNotifyModal(tr.dataset.container, idx);
+});
 
 function toggleDetail(idx) {
   var detail = document.getElementById('detail-' + idx);
