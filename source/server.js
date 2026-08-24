@@ -1288,18 +1288,21 @@ async function runUpdate(containerName, image) {
   }
 }
 
-function finishUpdate(containerName, status) {
+async function finishUpdate(containerName, status) {
   const state = activeUpdates[containerName];
   if (!state) return;
   state.status = status;
   const finishedAt = new Date().toISOString();
   saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt, status, log: state.log });
   appendActivityLog({ type: 'update-install', container: containerName, image: state.image, status, startedAt: state.startedAt, finishedAt });
-  broadcastStatus(containerName, status);
+  // Refresh the cache BEFORE broadcasting: on 'done' the UI immediately reads
+  // /api/last-result back, so the fresh digest/version must already be in there
+  // — otherwise it would render the pre-update values.
   if (status === 'done') {
-    refreshCacheAfterUpdate(containerName, state.image);
+    await refreshCacheAfterUpdate(containerName, state.image);
     clearTelegramSentForContainer(containerName);
   }
+  broadcastStatus(containerName, status);
   setTimeout(() => delete activeUpdates[containerName], 30000);
 }
 

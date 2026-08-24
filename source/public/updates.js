@@ -221,6 +221,7 @@ function subscribeUpdateStream(container, idx) {
       setTimeout(function () { hideRowProgress(idx); }, 700);
       addLog('Update completed for ' + container, 'ok');
       updateRowToUpToDate(idx);
+      refreshRowFromCache(container, idx);
     } else {
       // Failure: leave the bar in place, turned red.
       errorRowProgress(idx);
@@ -308,4 +309,63 @@ function updateRowToUpToDate(idx) {
   var detailRow = document.getElementById('detail-' + idx);
   if (detailRow) detailRow.classList.remove('row-outdated');
   updateStats();
+}
+
+// After a successful update the server has already refreshed the cache (digest,
+// version, state) — read it back so a UI left open does not keep showing the old
+// values until the next full scan. Only the affected row's cells are rewritten,
+// so an expanded detail panel and its update log stay in place.
+function refreshRowFromCache(container, idx) {
+  fetch('/api/last-result')
+    .then(function (r) { return r.json(); })
+    .then(function (cache) {
+      if (!cache || !cache.results) return;
+      var fresh = null;
+      for (var i = 0; i < cache.results.length; i++) {
+        if (cache.results[i].container === container) { fresh = cache.results[i]; break; }
+      }
+      if (!fresh) return;
+
+      var row = APP.results[idx - 1];
+      if (!row || row.container !== container) return;
+
+      row.localVersion = fresh.localVersion;
+      row.remoteVersion = fresh.remoteVersion;
+      row.localDigest = fresh.localDigest;
+      row.remoteDigest = fresh.remoteDigest;
+      row.state = fresh.state;
+      row.status = fresh.status;
+      row.result = fresh.result;
+
+      setCellText('cell-localver-' + idx, fresh.localVersion || '-');
+      setCellText('cell-remotever-' + idx, fresh.remoteVersion || '-');
+      setCellText('detail-localver-' + idx, fresh.localVersion || '-');
+      setCellText('detail-remotever-' + idx, fresh.remoteVersion || '-');
+      setCellText('detail-localdigest-' + idx, fresh.localDigest);
+      setCellText('detail-remotedigest-' + idx, fresh.remoteDigest);
+
+      var stateClass = fresh.state === 'running' ? 'state-running'
+        : fresh.state === 'exited' ? 'state-exited'
+          : 'state-other';
+      var dotClass = fresh.state === 'running' ? 'state-dot-running'
+        : fresh.state === 'exited' ? 'state-dot-exited'
+          : 'state-dot-other';
+      var stateIds = ['cell-state-' + idx, 'detail-state-' + idx];
+      for (var j = 0; j < stateIds.length; j++) {
+        var el = document.getElementById(stateIds[j]);
+        if (!el) continue;
+        el.className = 'state-badge ' + stateClass;
+        el.textContent = fresh.state == null ? '' : String(fresh.state);
+      }
+      var dot = document.getElementById('cell-statedot-' + idx);
+      if (dot) dot.className = 'state-dot-mobile ' + dotClass;
+
+      updateLastCheckedLabel(cache.timestamp);
+    })
+    .catch(function () { });
+}
+
+function setCellText(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value == null ? '' : String(value);
 }
