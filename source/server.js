@@ -520,7 +520,7 @@ async function fetchRemoteInfo(registry, repo, tag, known = {}) {
 // ---------------------------------------------------------------------------
 // Shared check logic (used by both SSE endpoint and auto-check)
 // ---------------------------------------------------------------------------
-async function runCheck(includeStopped, onProgress, onResult) {
+async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) {
   // Load previous results: the digests drive update-event logging, and the
   // digest+version pairs let fetchRemoteInfo() skip the version walk for
   // images that have not moved since the last run.
@@ -543,6 +543,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
   } catch { /* no previous cache */ }
 
   const containerList = await dockerApi('GET', `/containers/json?all=${includeStopped}`);
+  if (onTotal) onTotal({ count: containerList.length });
   const infoCache = {};
   const results = [];
   for (let i = 0; i < containerList.length; i++) {
@@ -607,6 +608,53 @@ async function runCheck(includeStopped, onProgress, onResult) {
   return { timestamp, results };
 }
 
+// ---------------------------------------------------------------------------
+// Only one check may be in flight at a time.
+//
+// A manual check started while the auto-check is running would race it on
+// last-result.json (one run's results silently lost), and both runs would send
+// their own Telegram notifications for the same outdated containers. A second
+// caller therefore attaches to the running check instead of starting its own:
+// it gets the rows produced so far replayed, then follows along live.
+// ---------------------------------------------------------------------------
+let checkInFlight = null;
+
+function runCheckExclusive(includeStopped, handlers = {}) {
+  if (checkInFlight) {
+    const run = checkInFlight;
+    if (handlers.onTotal && run.total !== null) handlers.onTotal({ count: run.total });
+    if (handlers.onResult) for (const row of run.produced) handlers.onResult(row);
+    run.subscribers.add(handlers);
+    return run.promise.finally(() => run.subscribers.delete(handlers));
+  }
+
+  const run = { total: null, produced: [], subscribers: new Set([handlers]) };
+  const fanout = (name, arg) => {
+    for (const sub of run.subscribers) {
+      try { if (sub[name]) sub[name](arg); } catch (e) { console.warn('[check] Subscriber failed:', e.message); }
+    }
+  };
+
+  run.promise = (async () => {
+    try {
+      const result = await runCheck(includeStopped, {
+        onTotal: (t) => { run.total = t.count; fanout('onTotal', t); },
+        onProgress: (p) => fanout('onProgress', p),
+        onResult: (r) => { run.produced.push(r); fanout('onResult', r); }
+      });
+      // Notifications belong to the run, not to whoever asked for it — sending
+      // them per caller would deliver one message per attached client.
+      sendTelegramNotifications(result.results).catch(e => console.warn('[telegram] Notification error:', e.message));
+      return result;
+    } finally {
+      checkInFlight = null;
+    }
+  })();
+
+  checkInFlight = run;
+  return run.promise;
+}
+
 app.get('/api/check', async (req, res) => {
   const includeStopped = req.query.includeStopped === 'true';
   res.setHeader('Content-Type', 'text/event-stream');
@@ -615,15 +663,13 @@ app.get('/api/check', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const containerList = await dockerApi('GET', `/containers/json?all=${includeStopped}`);
-    send('total', { count: containerList.length });
-    const result = await runCheck(includeStopped,
-      (p) => send('progress', p),
-      (r) => send('result', r)
-    );
+    const result = await runCheckExclusive(includeStopped, {
+      onTotal: (t) => send('total', t),
+      onProgress: (p) => send('progress', p),
+      onResult: (r) => send('result', r)
+    });
     scheduleNextAutoCheck();
     send('done', { total: result.results.length });
-    sendTelegramNotifications(result.results).catch(e => console.warn('[telegram] Notification error:', e.message));
   } catch (err) { send('error', { message: err.message }); }
   res.end();
 });
@@ -1036,9 +1082,8 @@ function scheduleNextAutoCheck() {
     console.log('Running auto-check…');
     broadcastEvent('auto-check-start', {});
     try {
-      const autoResult = await runCheck(true, null, null);
+      const autoResult = await runCheckExclusive(true);
       console.log('Auto-check complete.');
-      sendTelegramNotifications(autoResult.results).catch(e => console.warn('[telegram] Notification error:', e.message));
       broadcastEvent('auto-check-done', { timestamp: autoResult.timestamp, count: autoResult.results.length });
     } catch (e) {
       console.error('Auto-check failed:', e.message);
