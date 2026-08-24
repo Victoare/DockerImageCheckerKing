@@ -264,6 +264,15 @@ function parseImageReference(image) {
   return { registry, repo, tag, cacheKey: `${registry}/${repo}:${tag}` };
 }
 
+// The version label, in priority order. Images may carry any of these.
+function pickVersionLabel(labels) {
+  if (!labels) return null;
+  return labels['org.opencontainers.image.version']
+    || labels['org.label-schema.version']
+    || labels['version']
+    || null;
+}
+
 async function getTokenFromChallenge(registry, repo, wwwAuth) {
   const realmMatch = wwwAuth.match(/Bearer\s+realm="([^"]+)"/i);
   if (!realmMatch) return null;
@@ -356,79 +365,79 @@ function getRegistryHandler(registry) {
   return null; // generic/unknown
 }
 
-async function getRemoteDigest(registry, repo, tag) {
-  const handler = getRegistryHandler(registry);
-  let manifestUrl, headers = { 'Accept': ACCEPT_HEADER };
+// ---------------------------------------------------------------------------
+// Registry token cache — one token is valid for the whole manifest walk of a
+// repo, so authenticating once per repo instead of once per lookup removes a
+// round-trip (and an auth-server hit) for every image we check.
+// ---------------------------------------------------------------------------
+const TOKEN_TTL = 240000;
+const tokenCache = new Map(); // `${registry}|${repo}` -> { authHeader, expiresAt }
 
-  if (handler) {
-    manifestUrl = handler.getManifestUrl(repo, tag, registry);
-    const token = await handler.authenticate(repo, registry, manifestUrl);
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    else if (registry === 'docker.io' || registry === 'ghcr.io') return null; // these require auth
-  } else {
-    // Generic/unknown registry — try with challenge-based auth
-    manifestUrl = `https://${registry}/v2/${repo}/manifests/${tag}`;
-    try {
-      const test = await httpsHead(manifestUrl, headers);
-      if (test.statusCode === 401 && test.headers['www-authenticate']) {
-        const token = await getTokenFromChallenge(registry, repo, test.headers['www-authenticate']);
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        else return null;
-      }
-    } catch (e) { console.warn(`[digest] Generic registry probe failed for ${registry}:`, e.message); return null; }
-  }
-
-  // Try HEAD first (faster, no body)
-  try {
-    const res = await httpsHead(manifestUrl, headers);
-    updateRateLimit(registry, res.headers);
-    if (res.statusCode === 200 && res.headers['docker-content-digest']) return res.headers['docker-content-digest'].trim();
-  } catch (e) { console.warn(`[digest] HEAD failed for ${registry}/${repo}:${tag}:`, e.message); }
-
-  // Fallback to GET + compute hash
-  try {
-    const res = await httpsGet(manifestUrl, headers);
-    updateRateLimit(registry, res.headers);
-    if (res.statusCode === 200) {
-      if (res.headers['docker-content-digest']) return res.headers['docker-content-digest'].trim();
-      const hash = crypto.createHash('sha256').update(res.body).digest('hex');
-      return `sha256:${hash}`;
-    }
-  } catch (e) { console.warn(`[digest] GET failed for ${registry}/${repo}:${tag}:`, e.message); }
-
-  return null;
+function getCachedAuth(registry, repo) {
+  const hit = tokenCache.get(`${registry}|${repo}`);
+  return hit && hit.expiresAt > Date.now() ? hit : null;
 }
 
-// ---------------------------------------------------------------------------
-// Fetch remote OCI version label by walking manifest -> config blob
-// ---------------------------------------------------------------------------
-async function getRemoteVersion(registry, repo, tag) {
-  const handler = getRegistryHandler(registry);
-  let manifestUrl, headers = { 'Accept': ACCEPT_HEADER };
+function setCachedAuth(registry, repo, authHeader) {
+  tokenCache.set(`${registry}|${repo}`, { authHeader, expiresAt: Date.now() + TOKEN_TTL });
+}
 
-  if (handler) {
-    manifestUrl = handler.getManifestUrl(repo, tag, registry);
-    const token = await handler.authenticate(repo, registry, manifestUrl);
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    else if (registry === 'docker.io' || registry === 'ghcr.io') return null;
-  } else {
-    manifestUrl = `https://${registry}/v2/${repo}/manifests/${tag}`;
-    try {
-      const test = await httpsHead(manifestUrl, headers);
-      if (test.statusCode === 401 && test.headers['www-authenticate']) {
-        const token = await getTokenFromChallenge(registry, repo, test.headers['www-authenticate']);
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        else return null;
-      }
-    } catch { return null; }
+// Resolve the manifest URL plus the auth headers to use with it.
+// Returns null when the registry needs credentials we could not obtain.
+async function resolveManifestRequest(registry, repo, tag) {
+  const handler = getRegistryHandler(registry);
+  const headers = { 'Accept': ACCEPT_HEADER };
+  const manifestUrl = handler
+    ? handler.getManifestUrl(repo, tag, registry)
+    : `https://${registry}/v2/${repo}/manifests/${tag}`;
+
+  const cached = getCachedAuth(registry, repo);
+  if (cached) {
+    if (cached.authHeader) headers['Authorization'] = cached.authHeader;
+    return { manifestUrl, headers };
   }
 
+  let token = null;
+  if (handler) {
+    token = await handler.authenticate(repo, registry, manifestUrl);
+    // These registries never serve anonymous manifests, so a missing token is fatal.
+    if (!token && (registry === 'docker.io' || registry === 'ghcr.io')) return null;
+  } else {
+    // Generic/unknown registry — probe for a challenge, then honour it.
+    try {
+      const probe = await httpsHead(manifestUrl, headers);
+      if (probe.statusCode === 401 && probe.headers['www-authenticate']) {
+        token = await getTokenFromChallenge(registry, repo, probe.headers['www-authenticate']);
+        if (!token) return null;
+      }
+    } catch (e) {
+      console.warn(`[digest] Generic registry probe failed for ${registry}:`, e.message);
+      return null;
+    }
+  }
+
+  const authHeader = token ? `Bearer ${token}` : null;
+  setCachedAuth(registry, repo, authHeader);
+  if (authHeader) headers['Authorization'] = authHeader;
+  return { manifestUrl, headers };
+}
+
+// Walk manifest -> (platform manifest) -> config blob and read the version
+// label. `topManifest` is the already-parsed top-level manifest, when the
+// caller happens to have it; otherwise it is fetched here.
+function warnVersion(manifestUrl, reason) {
+  console.warn(`[version] Giving up on ${manifestUrl}: ${reason}`);
+}
+
+async function fetchVersionLabel(manifestUrl, headers, topManifest) {
   const baseUrl = manifestUrl.replace(/\/manifests\/[^/]+$/, '');
   try {
-    let mres = await httpsGet(manifestUrl, headers);
-    if (mres.statusCode !== 200) return null;
-    let manifest;
-    try { manifest = JSON.parse(mres.body); } catch { return null; }
+    let manifest = topManifest;
+    if (!manifest) {
+      const mres = await httpsGet(manifestUrl, headers);
+      if (mres.statusCode !== 200) { warnVersion(manifestUrl, `manifest HTTP ${mres.statusCode}`); return null; }
+      try { manifest = JSON.parse(mres.body); } catch { warnVersion(manifestUrl, 'manifest is not JSON'); return null; }
+    }
 
     // Manifest list / OCI index: pick a platform-specific entry (linux/amd64 preferred)
     if (Array.isArray(manifest.manifests) && manifest.manifests.length > 0) {
@@ -436,47 +445,105 @@ async function getRemoteVersion(registry, repo, tag) {
         || manifest.manifests.find(m => m.platform && m.platform.os === 'linux')
         || manifest.manifests[0];
       if (!pick || !pick.digest) return null;
-      mres = await httpsGet(`${baseUrl}/manifests/${pick.digest}`, headers);
-      if (mres.statusCode !== 200) return null;
-      try { manifest = JSON.parse(mres.body); } catch { return null; }
+      const pres = await httpsGet(`${baseUrl}/manifests/${pick.digest}`, headers);
+      if (pres.statusCode !== 200) { warnVersion(manifestUrl, `platform manifest HTTP ${pres.statusCode}`); return null; }
+      try { manifest = JSON.parse(pres.body); } catch { warnVersion(manifestUrl, 'platform manifest is not JSON'); return null; }
     }
 
     const configDigest = manifest.config && manifest.config.digest;
     if (!configDigest) return null;
 
     const bres = await httpsGet(`${baseUrl}/blobs/${configDigest}`, headers);
-    if (bres.statusCode !== 200) return null;
+    if (bres.statusCode !== 200) { warnVersion(manifestUrl, `config blob HTTP ${bres.statusCode}`); return null; }
     let config;
-    try { config = JSON.parse(bres.body); } catch { return null; }
+    try { config = JSON.parse(bres.body); } catch { warnVersion(manifestUrl, 'config blob is not JSON'); return null; }
 
     const labels = (config.config && config.config.Labels) || (config.Config && config.Config.Labels) || null;
-    if (!labels) return null;
-    return labels['org.opencontainers.image.version']
-        || labels['org.label-schema.version']
-        || labels['version']
-        || null;
+    return labels ? pickVersionLabel(labels) : null;
   } catch (e) {
-    console.warn(`[version] Failed for ${registry}/${repo}:${tag}:`, e.message);
+    console.warn(`[version] Failed for ${manifestUrl}:`, e.message);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Remote digest + version label in one pass.
+//
+// `known` may carry the digest/version this image resolved to on an earlier
+// run. The version label is a property of the digest, so when the digest has
+// not moved we reuse the known version and skip the manifest walk entirely —
+// in the steady state a check then costs one HEAD per image instead of a
+// manifest GET plus a platform manifest GET plus a config blob GET.
+// ---------------------------------------------------------------------------
+async function fetchRemoteInfo(registry, repo, tag, known = {}) {
+  const prep = await resolveManifestRequest(registry, repo, tag);
+  if (!prep) return { digest: null, version: null };
+  const { manifestUrl, headers } = prep;
+
+  let digest = null;
+  let topManifest = null;
+
+  // HEAD is enough for the digest and does not transfer the manifest body.
+  try {
+    const res = await httpsHead(manifestUrl, headers);
+    updateRateLimit(registry, res.headers);
+    if (res.statusCode === 200 && res.headers['docker-content-digest']) {
+      digest = res.headers['docker-content-digest'].trim();
+    }
+  } catch (e) { console.warn(`[digest] HEAD failed for ${registry}/${repo}:${tag}:`, e.message); }
+
+  // Fallback: GET the manifest and use its header, or hash the body ourselves.
+  // The parsed body is kept so the version walk below need not refetch it.
+  if (!digest) {
+    try {
+      const res = await httpsGet(manifestUrl, headers);
+      updateRateLimit(registry, res.headers);
+      if (res.statusCode === 200) {
+        digest = res.headers['docker-content-digest']
+          ? res.headers['docker-content-digest'].trim()
+          : `sha256:${crypto.createHash('sha256').update(res.body).digest('hex')}`;
+        try { topManifest = JSON.parse(res.body); } catch { /* not usable for the version walk */ }
+      }
+    } catch (e) { console.warn(`[digest] GET failed for ${registry}/${repo}:${tag}:`, e.message); }
+  }
+
+  if (!digest) return { digest: null, version: null };
+
+  if (known.digest === digest && known.version) {
+    return { digest, version: known.version, versionReused: true };
+  }
+
+  const version = await fetchVersionLabel(manifestUrl, headers, topManifest);
+  return { digest, version };
 }
 
 // ---------------------------------------------------------------------------
 // Shared check logic (used by both SSE endpoint and auto-check)
 // ---------------------------------------------------------------------------
 async function runCheck(includeStopped, onProgress, onResult) {
-  // Load previous results to detect digest changes for update-event logging
+  // Load previous results: the digests drive update-event logging, and the
+  // digest+version pairs let fetchRemoteInfo() skip the version walk for
+  // images that have not moved since the last run.
   let prevDigests = {};
+  const knownByImage = {};
   try {
     const prev = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
     if (prev && prev.results) {
-      for (const r of prev.results) prevDigests[r.container] = r.remoteDigest;
+      for (const r of prev.results) {
+        prevDigests[r.container] = r.remoteDigest;
+        const p = parseImageReference(r.image);
+        if (p && r.remoteDigest && r.remoteDigest !== '-') {
+          knownByImage[p.cacheKey] = {
+            digest: r.remoteDigest,
+            version: r.remoteVersion && r.remoteVersion !== '-' ? r.remoteVersion : null
+          };
+        }
+      }
     }
   } catch { /* no previous cache */ }
 
   const containerList = await dockerApi('GET', `/containers/json?all=${includeStopped}`);
-  const digestCache = {};
-  const versionCache = {};
+  const infoCache = {};
   const results = [];
   for (let i = 0; i < containerList.length; i++) {
     const ctr = containerList[i];
@@ -497,13 +564,7 @@ async function runCheck(includeStopped, onProgress, onResult) {
           if (m) { localDigest = m[1]; break; }
         }
       }
-      const labels = (inspect.Config && inspect.Config.Labels) || null;
-      if (labels) {
-        localVersion = labels['org.opencontainers.image.version']
-          || labels['org.label-schema.version']
-          || labels['version']
-          || null;
-      }
+      localVersion = pickVersionLabel((inspect.Config && inspect.Config.Labels) || null);
     };
     try {
       extractFromInspect(await dockerApi('GET', `/images/${encodeURIComponent(image)}/json`));
@@ -512,22 +573,20 @@ async function runCheck(includeStopped, onProgress, onResult) {
         extractFromInspect(await dockerApi('GET', `/images/${ctr.ImageID}/json`));
       } catch (e2) { console.warn(`[check] Could not inspect image for ${name}:`, e2.message); }
     }
-    let remoteDigest = null, fromCache = false;
-    if (digestCache.hasOwnProperty(parsed.cacheKey)) {
-      remoteDigest = digestCache[parsed.cacheKey]; fromCache = true;
+    let info, fromCache = false;
+    if (infoCache.hasOwnProperty(parsed.cacheKey)) {
+      info = infoCache[parsed.cacheKey]; fromCache = true;
     } else {
-      remoteDigest = await getRemoteDigest(parsed.registry, parsed.repo, parsed.tag);
-      if (remoteDigest === null && parsed.registry !== 'docker.io') remoteDigest = await getRemoteDigest('docker.io', parsed.repo, parsed.tag);
-      digestCache[parsed.cacheKey] = remoteDigest;
+      const known = knownByImage[parsed.cacheKey] || {};
+      info = await fetchRemoteInfo(parsed.registry, parsed.repo, parsed.tag, known);
+      // Some registries only mirror; fall back to Docker Hub for the same repo.
+      if (info.digest === null && parsed.registry !== 'docker.io') {
+        info = await fetchRemoteInfo('docker.io', parsed.repo, parsed.tag, known);
+      }
+      infoCache[parsed.cacheKey] = info;
     }
-    let remoteVersion = null;
-    if (versionCache.hasOwnProperty(parsed.cacheKey)) {
-      remoteVersion = versionCache[parsed.cacheKey];
-    } else {
-      remoteVersion = await getRemoteVersion(parsed.registry, parsed.repo, parsed.tag);
-      if (remoteVersion === null && parsed.registry !== 'docker.io') remoteVersion = await getRemoteVersion('docker.io', parsed.repo, parsed.tag);
-      versionCache[parsed.cacheKey] = remoteVersion;
-    }
+    const remoteDigest = info.digest;
+    const remoteVersion = info.version;
     let result = 'Unknown';
     if (remoteDigest === null) result = 'Unknown';
     else if (localDigest === null) result = 'NoLocalDigest';
@@ -1322,13 +1381,7 @@ async function refreshCacheAfterUpdate(containerName, image) {
           if (m) { localDigest = m[1]; break; }
         }
       }
-      const labels = (inspect.Config && inspect.Config.Labels) || null;
-      if (labels) {
-        localVersion = labels['org.opencontainers.image.version']
-          || labels['org.label-schema.version']
-          || labels['version']
-          || null;
-      }
+      localVersion = pickVersionLabel((inspect.Config && inspect.Config.Labels) || null);
     } catch (e) { console.warn('[cache] Could not inspect image after update:', e.message); }
     if (localDigest) {
       row.localDigest = localDigest;
