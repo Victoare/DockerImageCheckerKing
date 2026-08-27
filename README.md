@@ -66,7 +66,7 @@ docker build -t docker-image-checker-king ./source
 - **Auto-check scheduler** — adapts interval based on Docker Hub rate limits
 - **Clickable stat cards** — filter by Up to date / Outdated / Unknown / Total
 - **Responsive table** — columns collapse progressively on smaller screens
-- **Telegram notifications** — get alerted when outdated containers are found, with per-container overrides, multiple chats and editable template.
+- **Telegram notifications** — get alerted when outdated containers are found *and* when an update succeeds or fails, with per-container overrides, multiple chats and editable templates.
 - **Dark/Light theme** — toggle persisted in localStorage with automatic support
 
 ## Updating containers
@@ -110,6 +110,13 @@ Mute notification on selected containers.
 3. Add the bot to a group chat or start a private conversation with it and send it a message
 4. Open the **Settings** (gear icon) in the web UI → click **Discover chats** to auto-detect available chat IDs
 5. Enable the chats you want to receive notifications on
+
+### Update reports
+
+Independently of the outdated alerts, each chat reports the outcome of container updates.
+**Successful** and **Failed** are two separate switches, both **on by default**, and both can be overridden
+per container (Default / On / Off) from the bell icon. The two messages have their own editable templates —
+open the template editor and switch tabs.
 
 ### Notification modes
 

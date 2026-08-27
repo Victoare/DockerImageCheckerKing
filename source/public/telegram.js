@@ -62,13 +62,20 @@ function renderTelegramChats() {
       '<div class="tg-chat-mode">' +
         '<label class="tg-radio"><input type="radio" name="tg-mode-' + i + '" value="once" ' + (chat.mode !== 'every' ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].mode=\'once\'"> Once per mismatch</label>' +
         '<label class="tg-radio"><input type="radio" name="tg-mode-' + i + '" value="every" ' + (chat.mode === 'every' ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].mode=\'every\'"> Every new remote digest</label>' +
+      '</div>' +
+      // Update results are a separate stream from the outdated alerts above:
+      // two independent switches, both off unless asked for.
+      '<div class="tg-chat-mode tg-chat-updates">' +
+        '<span class="tg-chat-updates-label">Update reports</span>' +
+        '<label class="tg-radio"><input type="checkbox" ' + (chat.notifyUpdateSuccess !== false ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].notifyUpdateSuccess=this.checked"> Successful</label>' +
+        '<label class="tg-radio"><input type="checkbox" ' + (chat.notifyUpdateFail !== false ? 'checked' : '') + ' onchange="telegramConfig.chats[' + i + '].notifyUpdateFail=this.checked"> Failed</label>' +
       '</div>';
     list.appendChild(div);
   }
 }
 
 function addTelegramChat() {
-  telegramConfig.chats.push({ chatId: '', name: '', enabled: true, mode: 'once' });
+  telegramConfig.chats.push({ chatId: '', name: '', enabled: true, mode: 'once', notifyUpdateSuccess: true, notifyUpdateFail: true });
   renderTelegramChats();
 }
 
@@ -102,7 +109,9 @@ function discoverTelegramChats() {
           chatId: chats[j].chatId,
           name: chats[j].name || '',
           enabled: true,
-          mode: 'once'
+          mode: 'once',
+          notifyUpdateSuccess: true,
+          notifyUpdateFail: true
         });
         added++;
       }
@@ -249,16 +258,47 @@ function renderContainerNotify(container, chats, co) {
     var chat = chats[i];
     var chatOverride = co.chats[chat.chatId] || {};
     var chatEnabled = chatOverride.enabled !== false;
-    var chatMode = chatOverride.mode || chat.mode || 'once';
     var label = chat.name ? esc(chat.name) : esc(chat.chatId);
 
+    // Every setting here is tri-state: no stored value means "follow the chat's
+    // global setting", which is what the Default option writes back.
+    var storedMode = chatOverride.mode || '';
+    var storedSuccess = typeof chatOverride.notifyUpdateSuccess === 'boolean' ? (chatOverride.notifyUpdateSuccess ? 'on' : 'off') : '';
+    var storedFail = typeof chatOverride.notifyUpdateFail === 'boolean' ? (chatOverride.notifyUpdateFail ? 'on' : 'off') : '';
+
+    // One row: label on the left, its dropdown on the right.
+    var optionRow = function (rowLabel, key, current, opts) {
+      var select = '<select class="cnotify-select" onchange="cnotifySetChatOption(\'' + esc(chat.chatId) + '\', \'' + key + '\', this.value)">';
+      for (var k = 0; k < opts.length; k++) {
+        select += '<option value="' + opts[k][0] + '"' + (current === opts[k][0] ? ' selected' : '') + '>' + opts[k][1] + '</option>';
+      }
+      select += '</select>';
+      return '<div class="cnotify-opt"><span class="cnotify-opt-label">' + rowLabel + '</span>' +
+        '<div class="cnotify-opt-controls">' + select + '</div></div>';
+    };
+
     html +=
-      '<div class="cnotify-row cnotify-chat-row">' +
-        '<label class="tg-toggle"><input type="checkbox" ' + (chatEnabled ? 'checked' : '') + ' onchange="cnotifySetChatEnabled(\'' + esc(chat.chatId) + '\', this.checked)"><span class="tg-toggle-slider"></span></label>' +
-        '<span class="cnotify-label">' + label + '</span>' +
-        '<div class="cnotify-mode">' +
-          '<label class="tg-radio"><input type="radio" name="cnotify-mode-m-' + i + '" value="once" ' + (chatMode !== 'every' ? 'checked' : '') + ' onchange="cnotifySetChatMode(\'' + esc(chat.chatId) + '\', \'once\')"> Once</label>' +
-          '<label class="tg-radio"><input type="radio" name="cnotify-mode-m-' + i + '" value="every" ' + (chatMode === 'every' ? 'checked' : '') + ' onchange="cnotifySetChatMode(\'' + esc(chat.chatId) + '\', \'every\')"> Every</label>' +
+      '<div class="cnotify-chat">' +
+        '<div class="cnotify-chat-head">' +
+          '<label class="tg-toggle"><input type="checkbox" ' + (chatEnabled ? 'checked' : '') + ' onchange="cnotifySetChatEnabled(\'' + esc(chat.chatId) + '\', this.checked)"><span class="tg-toggle-slider"></span></label>' +
+          '<span class="cnotify-chat-name">' + label + '</span>' +
+        '</div>' +
+        '<div class="cnotify-opts">' +
+          optionRow('On update available', 'mode', storedMode, [
+            ['', 'Default (' + (chat.mode === 'every' ? 'every' : 'once') + ')'],
+            ['once', 'Once'],
+            ['every', 'Every']
+          ]) +
+          optionRow('On update succeeded', 'notifyUpdateSuccess', storedSuccess, [
+            ['', 'Default (' + (chat.notifyUpdateSuccess !== false ? 'on' : 'off') + ')'],
+            ['on', 'On'],
+            ['off', 'Off']
+          ]) +
+          optionRow('On update failed', 'notifyUpdateFail', storedFail, [
+            ['', 'Default (' + (chat.notifyUpdateFail !== false ? 'on' : 'off') + ')'],
+            ['on', 'On'],
+            ['off', 'Off']
+          ]) +
         '</div>' +
       '</div>';
   }
@@ -378,12 +418,17 @@ function cnotifySetChatEnabled(chatId, val) {
   cnotifySave();
 }
 
-function cnotifySetChatMode(chatId, mode) {
+// One setter for every tri-state chat option. An empty value drops the override
+// so the chat's global setting applies again; 'on'/'off' are stored as booleans,
+// the mode as its own string.
+function cnotifySetChatOption(chatId, key, value) {
   var container = cnotifyCurrentContainer;
   var idx = cnotifyCurrentIdx;
   var co = cnotifyCache[container];
   if (!co.chats[chatId]) co.chats[chatId] = {};
-  co.chats[chatId].mode = mode;
+  if (value === '') delete co.chats[chatId][key];
+  else if (key === 'mode') co.chats[chatId].mode = value;
+  else co.chats[chatId][key] = (value === 'on');
   updateCnotifyBtnState(idx, container);
   cnotifySave();
 }

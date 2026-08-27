@@ -5,7 +5,7 @@
 const { resultStore, appendActivityLog, saveUpdateLog } = require('./store');
 const { dockerApi } = require('./docker');
 const { parseImageReference, pickVersionLabel } = require('./registry');
-const { clearTelegramSentForContainer } = require('./telegram');
+const { clearTelegramSentForContainer, sendUpdateNotification } = require('./telegram');
 const { recordUpdate } = require('./metrics');
 
 // ---------------------------------------------------------------------------
@@ -440,6 +440,8 @@ async function finishUpdate(containerName, status) {
   saveUpdateLog(containerName, entry);
   appendActivityLog({ type: 'update-install', container: containerName, image: state.image, status, startedAt: state.startedAt, finishedAt });
   recordUpdate(status);
+  sendUpdateNotification(containerName, state.image, status, { startedAt: state.startedAt, finishedAt })
+    .catch(e => console.warn('[telegram] Update notification failed:', e.message));
   // Refresh the cache BEFORE broadcasting: on 'done' the UI immediately reads
   // /api/last-result back, so the fresh digest/version must already be in there
   // — otherwise it would render the pre-update values.

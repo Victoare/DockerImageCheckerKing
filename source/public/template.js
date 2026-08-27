@@ -1,16 +1,34 @@
 // =========================================================================
 // Template Editor
 // =========================================================================
+// Three separate messages share one editor. All of them are loaded up front and
+// held in memory, so switching tabs never loses an unsaved edit and Save can
+// write back only the ones that actually changed.
+var TMPL_KINDS = ['outdated', 'updateSuccess', 'updateFail'];
+var tmplKind = 'outdated';
+var tmplDefaults = {};
+var tmplBuffers = {};
+var tmplOriginals = {};
+
+// Editing the outdated alert previews against a real row; the update reports
+// preview against the same row plus the timing tokens an update supplies.
 var tmplDefault = '';
-var tmplOriginal = '';
 
 function openTemplateEditor() {
-  fetch('/api/telegram/template')
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      tmplDefault = data.default || '';
-      tmplOriginal = data.template || tmplDefault;
-      document.getElementById('tmplEditor').value = tmplOriginal;
+  Promise.all(TMPL_KINDS.map(function (kind) {
+    return fetch('/api/telegram/template?kind=' + kind).then(function (r) { return r.json(); });
+  }))
+    .then(function (all) {
+      for (var i = 0; i < TMPL_KINDS.length; i++) {
+        var kind = TMPL_KINDS[i];
+        tmplDefaults[kind] = all[i].default || '';
+        tmplOriginals[kind] = all[i].template || tmplDefaults[kind];
+        tmplBuffers[kind] = tmplOriginals[kind];
+      }
+      tmplKind = 'outdated';
+      tmplDefault = tmplDefaults[tmplKind];
+      document.getElementById('tmplEditor').value = tmplBuffers[tmplKind];
+      tmplRenderTabs();
       tmplPopulateContainerSelect();
       tmplPopulateChatSelect();
       tmplUpdatePreview();
@@ -19,6 +37,24 @@ function openTemplateEditor() {
       document.body.classList.add('modal-open');
       setTimeout(function () { modal.classList.add('visible'); }, 10);
     });
+}
+
+// Switch which message is being edited, keeping the current buffer.
+function tmplSelectKind(kind) {
+  if (kind === tmplKind) return;
+  tmplBuffers[tmplKind] = document.getElementById('tmplEditor').value;
+  tmplKind = kind;
+  tmplDefault = tmplDefaults[kind];
+  document.getElementById('tmplEditor').value = tmplBuffers[kind] || '';
+  tmplRenderTabs();
+  tmplUpdatePreview();
+}
+
+function tmplRenderTabs() {
+  var tabs = document.querySelectorAll('#tmplTabs .tmpl-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].classList.toggle('active', tabs[i].getAttribute('data-kind') === tmplKind);
+  }
 }
 
 function closeTemplateEditor() {
@@ -65,7 +101,9 @@ var TMPL_MOCK = {
   container: 'my-awesome-app', image: 'nginx:latest', registry: 'docker.io',
   tag: 'latest', state: 'running', status: 'Up 3 days',
   localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...',
-  localVersion: '1.25.3', remoteVersion: '1.25.4'
+  localVersion: '1.25.3', remoteVersion: '1.25.4',
+  startedAt: '2025-01-01 12:00:00', finishedAt: '2025-01-01 12:02:31',
+  error: 'Docker request timeout after 600s of silence: POST /images/create'
 };
 
 function tmplRenderPreview(template, data) {
@@ -88,7 +126,14 @@ function tmplUpdatePreview() {
   var data = TMPL_MOCK;
   if (sel !== '__mock__') {
     var row = APP.results.find(function (r) { return r.container === sel; });
-    if (row) data = row;
+    if (row) {
+      // A cached row has no update timing on it; borrow the mock values so the
+      // update templates still render something meaningful in the preview.
+      data = Object.assign({}, row, {
+        startedAt: TMPL_MOCK.startedAt, finishedAt: TMPL_MOCK.finishedAt,
+        error: tmplKind === 'updateFail' ? TMPL_MOCK.error : ''
+      });
+    }
   }
   var rendered = tmplRenderPreview(template, data);
   document.getElementById('tmplPreview').innerHTML = rendered.replace(/\n/g, '<br>');
@@ -119,21 +164,28 @@ document.getElementById('tmplToolbar').addEventListener('mousedown', function (e
 });
 
 function tmplResetDefault() {
-  document.getElementById('tmplEditor').value = tmplDefault;
+  document.getElementById('tmplEditor').value = tmplDefaults[tmplKind] || '';
   tmplUpdatePreview();
 }
 
 function saveTemplate() {
-  var template = document.getElementById('tmplEditor').value;
-  fetch('/api/telegram/template', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ template: template })
-  })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok) closeTemplateEditor();
-      else alert('Failed to save: ' + JSON.stringify(d));
+  tmplBuffers[tmplKind] = document.getElementById('tmplEditor').value;
+  var changed = TMPL_KINDS.filter(function (kind) {
+    return tmplBuffers[kind] !== tmplOriginals[kind];
+  });
+  if (!changed.length) { closeTemplateEditor(); return; }
+  Promise.all(changed.map(function (kind) {
+    return fetch('/api/telegram/template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: tmplBuffers[kind], kind: kind })
+    }).then(function (r) { return r.json(); });
+  }))
+    .then(function (results) {
+      var bad = results.filter(function (d) { return !d.ok; });
+      if (bad.length) { alert('Failed to save: ' + JSON.stringify(bad)); return; }
+      for (var i = 0; i < changed.length; i++) tmplOriginals[changed[i]] = tmplBuffers[changed[i]];
+      closeTemplateEditor();
     })
     .catch(function (e) { alert('Error: ' + e.message); });
 }

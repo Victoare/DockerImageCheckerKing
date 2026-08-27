@@ -183,6 +183,11 @@
           <h3>Message Template</h3>
         </div>
         <div class="modal-body tmpl-body">
+          <div class="tmpl-tabs" id="tmplTabs">
+            <button class="tmpl-tab active" data-kind="outdated" onclick="tmplSelectKind('outdated')">Outdated alert</button>
+            <button class="tmpl-tab" data-kind="updateSuccess" onclick="tmplSelectKind('updateSuccess')">Update succeeded</button>
+            <button class="tmpl-tab" data-kind="updateFail" onclick="tmplSelectKind('updateFail')">Update failed</button>
+          </div>
           <div class="tmpl-toolbar" id="tmplToolbar">
             <button class="tmpl-tb-btn" data-wrap="<b>|</b>" title="Bold"><b>B</b></button>
             <button class="tmpl-tb-btn" data-wrap="<i>|</i>" title="Italic"><i>I</i></button>
@@ -201,6 +206,10 @@
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{remoteVersion}" title="Available version (OCI label)">{remoteVersion}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{localDigest}" title="Local digest">{localDigest}</button>
             <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{remoteDigest}" title="Remote digest">{remoteDigest}</button>
+            <span class="tmpl-tb-sep"></span>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{startedAt}" title="Update start time (update reports only)">{startedAt}</button>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{finishedAt}" title="Update finish time (update reports only)">{finishedAt}</button>
+            <button class="tmpl-tb-btn tmpl-tb-token" data-insert="{error}" title="Last error (failed update reports only)">{error}</button>
             <span class="tmpl-tb-sep"></span>
             <button class="tmpl-tb-btn tmpl-tb-token" data-wrap="{?localVersion}|{/}" title="Only render if the token has a value. Replace 'localVersion' with any token name.">{?…}{/}</button>
           </div>

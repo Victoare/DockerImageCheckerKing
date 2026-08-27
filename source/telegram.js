@@ -6,7 +6,7 @@ const https = require('https');
 const path = require('path');
 const { URL } = require('url');
 
-const { createJsonStore, DATA_DIR, appendActivityLog } = require('./store');
+const { createJsonStore, DATA_DIR, appendActivityLog, resultStore } = require('./store');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -15,6 +15,19 @@ const DEFAULT_TELEGRAM_TEMPLATE = '<b>Update available!</b>\n\n' +
   'Image: <code>{image}</code>\n' +
   'Registry: {registry}\n' +
   'Tag: {tag}';
+
+const DEFAULT_UPDATE_SUCCESS_TEMPLATE = '<b>Update successful ✅</b>\n\n' +
+  'Container: <code>{container}</code>\n' +
+  'Image: <code>{image}</code>\n' +
+  '{?remoteVersion}Version: {remoteVersion}\n{/}' +
+  'Finished: {finishedAt}';
+
+const DEFAULT_UPDATE_FAIL_TEMPLATE = '<b>Update failed ❌</b>\n\n' +
+  'Container: <code>{container}</code>\n' +
+  'Image: <code>{image}</code>\n' +
+  'Started: {startedAt}\n' +
+  'Finished: {finishedAt}\n' +
+  '{?error}\nLast error: <code>{error}</code>{/}';
 
 const TELEGRAM_CONFIG_FILE = path.join(DATA_DIR, 'telegram.json');
 const TELEGRAM_SENT_FILE = path.join(DATA_DIR, 'telegram-sent.json');
@@ -71,19 +84,39 @@ async function sendTelegramMessage(chatId, text) {
   });
 }
 
-function loadTelegramTemplate() {
-  const data = telegramTemplateStore.load();
-  return data && data.template ? data.template : DEFAULT_TELEGRAM_TEMPLATE;
+// Three independent templates live in one file. 'outdated' keeps the original
+// `template` key so existing installs keep their customised message.
+const TEMPLATE_KINDS = {
+  outdated: { key: 'template', default: DEFAULT_TELEGRAM_TEMPLATE },
+  updateSuccess: { key: 'updateSuccess', default: DEFAULT_UPDATE_SUCCESS_TEMPLATE },
+  updateFail: { key: 'updateFail', default: DEFAULT_UPDATE_FAIL_TEMPLATE }
+};
+
+function templateDefault(kind) {
+  return (TEMPLATE_KINDS[kind] || TEMPLATE_KINDS.outdated).default;
 }
 
-function saveTelegramTemplate(template) { telegramTemplateStore.save({ template }); }
+function loadTelegramTemplate(kind = 'outdated') {
+  const spec = TEMPLATE_KINDS[kind] || TEMPLATE_KINDS.outdated;
+  const data = telegramTemplateStore.load();
+  return data && data[spec.key] ? data[spec.key] : spec.default;
+}
+
+function saveTelegramTemplate(template, kind = 'outdated') {
+  const spec = TEMPLATE_KINDS[kind] || TEMPLATE_KINDS.outdated;
+  const data = { ...(telegramTemplateStore.load() || {}) };
+  data[spec.key] = template;
+  telegramTemplateStore.save(data);
+}
 
 function renderTelegramTemplate(template, row) {
   const tokens = {
     container: row.container, image: row.image, registry: row.registry, tag: row.tag,
     state: row.state, status: row.status,
     localDigest: row.localDigest, remoteDigest: row.remoteDigest,
-    localVersion: row.localVersion, remoteVersion: row.remoteVersion
+    localVersion: row.localVersion, remoteVersion: row.remoteVersion,
+    // Update-notification tokens; empty (and so skippable with {?…}) elsewhere.
+    startedAt: row.startedAt, finishedAt: row.finishedAt, error: row.error, attempts: row.attempts
   };
   const has = (name) => {
     const v = tokens[name];
@@ -190,6 +223,69 @@ async function sendTelegramNotifications(results) {
   if (changed) saveTelegramSent(sent);
 }
 
+// ---------------------------------------------------------------------------
+// Update-result notifications
+//
+// Success and failure are two independent switches, each settable globally per
+// chat (`notifyUpdateSuccess` / `notifyUpdateFail`) and overridable per
+// container. Both default to ON, so an install that has never touched them
+// still reports its update outcomes; only an explicit `false` turns one off.
+// The per-container value is deliberately tri-state: absent means "inherit the
+// chat default", exactly like the once/every mode.
+// ---------------------------------------------------------------------------
+const UPDATE_NOTIFY_KEYS = { done: 'notifyUpdateSuccess', failed: 'notifyUpdateFail' };
+
+function updateNotifyEnabled(chat, containerOverride, status) {
+  const key = UPDATE_NOTIFY_KEYS[status];
+  if (!key) return false;
+  const co = containerOverride;
+  if (co && co.chats && co.chats[chat.chatId] && typeof co.chats[chat.chatId][key] === 'boolean') {
+    return co.chats[chat.chatId][key];
+  }
+  return chat[key] !== false;
+}
+
+async function sendUpdateNotification(containerName, image, status, ctx = {}) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  if (status !== 'done' && status !== 'failed') return;
+  const config = loadTelegramConfig();
+  if (!config.chats || !config.chats.length) return;
+
+  const cnotify = loadContainerNotify();
+  const co = cnotify[containerName];
+  if (co && co.enabled === false) return;
+
+  // Enrich from the cache so the message can carry versions and digests too.
+  let row = null;
+  try {
+    const cache = resultStore.load();
+    row = cache && cache.results && cache.results.find(r => r.container === containerName);
+  } catch { /* no cache */ }
+
+  const data = {
+    ...(row || {}),
+    container: containerName, image,
+    startedAt: ctx.startedAt ? new Date(ctx.startedAt).toLocaleString() : '',
+    finishedAt: ctx.finishedAt ? new Date(ctx.finishedAt).toLocaleString() : '',
+    error: ctx.error || ''
+  };
+  const template = loadTelegramTemplate(status === 'done' ? 'updateSuccess' : 'updateFail');
+  const text = renderTelegramTemplate(template, data);
+
+  for (const chat of config.chats) {
+    if (!chat.enabled) continue;
+    if (co && co.chats && co.chats[chat.chatId] && co.chats[chat.chatId].enabled === false) continue;
+    if (!updateNotifyEnabled(chat, co, status)) continue;
+    try {
+      const result = await sendTelegramMessage(chat.chatId, text);
+      if (result.ok) appendActivityLog({ type: 'notify-sent', container: containerName, chatId: chat.chatId, kind: 'update-' + status });
+      else appendActivityLog({ type: 'notify-fail', container: containerName, chatId: chat.chatId, kind: 'update-' + status, reason: 'api-error', detail: result.description });
+    } catch (e) {
+      appendActivityLog({ type: 'notify-fail', container: containerName, chatId: chat.chatId, kind: 'update-' + status, reason: 'exception', detail: e.message });
+    }
+  }
+}
+
 // Container-level notification overrides
 // { "container-name": { enabled: false, chats: { "chatId": { enabled: true, mode: "once" } } } }
 function loadContainerNotify() { return containerNotifyStore.load(); }
@@ -228,10 +324,10 @@ function getNotifyInfo(containerName, state) {
 function saveContainerNotify(data) { containerNotifyStore.save(data); }
 
 module.exports = {
-  TELEGRAM_BOT_TOKEN, DEFAULT_TELEGRAM_TEMPLATE,
+  TELEGRAM_BOT_TOKEN, DEFAULT_TELEGRAM_TEMPLATE, templateDefault,
   loadTelegramConfig, saveTelegramConfig,
   loadTelegramTemplate, saveTelegramTemplate, renderTelegramTemplate,
-  sendTelegramMessage, sendTelegramNotifications,
+  sendTelegramMessage, sendTelegramNotifications, sendUpdateNotification,
   clearTelegramSentForContainer,
   loadContainerNotify, saveContainerNotify, getNotifyInfo
 };

@@ -1656,6 +1656,22 @@
   padding-left: 44px;
 }
 
+/* Update reports are a second, independent notification stream, so they get
+   their own labelled line under the once/every mode. */
+.tg-chat-updates {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.tg-chat-updates-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+}
+
 .tg-radio {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -1838,10 +1854,82 @@
   white-space: nowrap;
 }
 
-.cnotify-mode {
+/* One chat = one bordered block: its name and on/off switch on their own line,
+   then the settings as label-left / controls-right rows. */
+.cnotify-chat {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.cnotify-chat-head {
   display: flex;
+  align-items: center;
   gap: 10px;
-  flex-shrink: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cnotify-chat-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cnotify-opts {
+  display: flex;
+  flex-direction: column;
+}
+
+.cnotify-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+}
+
+.cnotify-opt + .cnotify-opt {
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.cnotify-opt-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.cnotify-opt-controls {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.cnotify-select {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  min-width: 118px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.cnotify-select:hover,
+.cnotify-select:focus {
+  border-color: var(--accent);
 }
 
 .cnotify-empty {
@@ -1864,9 +1952,15 @@
 .cnotify-warning strong { font-weight: 600; }
 
 @media (max-width: 639px) {
-  .cnotify-mode {
-    width: 100%;
-    padding-left: 46px;
+  /* Too narrow to keep label and controls on one line — stack them. */
+  .cnotify-opt {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .cnotify-opt-controls {
+    justify-content: flex-start;
   }
 }
 
@@ -2086,6 +2180,36 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.tmpl-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tmpl-tab {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 12px;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tmpl-tab:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.tmpl-tab.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .tmpl-toolbar {

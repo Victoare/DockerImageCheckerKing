@@ -9,7 +9,8 @@ const {
   loadTelegramConfig, saveTelegramConfig,
   loadTelegramTemplate, saveTelegramTemplate, renderTelegramTemplate,
   sendTelegramMessage, sendTelegramNotifications,
-  loadContainerNotify, saveContainerNotify, getNotifyInfo
+  loadContainerNotify, saveContainerNotify, getNotifyInfo,
+  templateDefault
 } = require('./telegram');
 const { activeUpdates, runUpdate, queuePosition } = require('./updater');
 const { renderMetrics, recordCheckDuration } = require('./metrics');
@@ -215,14 +216,17 @@ app.post('/api/telegram/test', async (req, res) => {
   }
 });
 
-app.get('/api/telegram/template', (_req, res) => {
-  res.json({ template: loadTelegramTemplate(), default: DEFAULT_TELEGRAM_TEMPLATE });
+// `kind` selects which of the three messages is being edited: the default
+// outdated-container alert, or the success / failure update reports.
+app.get('/api/telegram/template', (req, res) => {
+  const kind = req.query.kind || 'outdated';
+  res.json({ kind, template: loadTelegramTemplate(kind), default: templateDefault(kind) });
 });
 
 app.post('/api/telegram/template', (req, res) => {
-  const { template } = req.body;
+  const { template, kind } = req.body;
   if (typeof template !== 'string') return res.status(400).json({ error: 'template string required' });
-  saveTelegramTemplate(template);
+  saveTelegramTemplate(template, kind || 'outdated');
   res.json({ ok: true });
 });
 
@@ -242,7 +246,15 @@ app.post('/api/telegram/template/send', async (req, res) => {
     row = { container: 'my-awesome-app', image: 'nginx:latest', registry: 'docker.io', tag: 'latest', state: 'running', status: 'Up 3 days', localDigest: 'sha256:abc123...', remoteDigest: 'sha256:def456...' };
   }
   try {
-    const text = renderTelegramTemplate(template, row);
+    // Update templates carry timing tokens a cached row does not have; fill in
+    // plausible values so a test send is not full of blanks.
+    const preview = {
+      startedAt: new Date(Date.now() - 150000).toLocaleString(),
+      finishedAt: new Date().toLocaleString(),
+      error: 'Docker request timeout after 600s of silence: POST /images/create',
+      ...row
+    };
+    const text = renderTelegramTemplate(template, preview);
     const result = await sendTelegramMessage(chatId, text);
     res.json(result);
   } catch (e) {
