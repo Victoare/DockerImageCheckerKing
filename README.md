@@ -1,10 +1,6 @@
 # Docker Image Checker King 🐳
 
-[![GitHub release](https://img.shields.io/github/v/release/Victoare/DockerImageCheckerKing?logo=github)](https://github.com/Victoare/DockerImageCheckerKing/releases/latest)
-[![Docker Hub](https://img.shields.io/docker/v/victoare/docker-image-checker-king?sort=date&label=docker%20hub&logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king)
-[![Image Size](https://img.shields.io/docker/image-size/victoare/docker-image-checker-king/latest?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king/tags)
-[![Docker Pulls](https://img.shields.io/docker/pulls/victoare/docker-image-checker-king?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king)
-[![License: MIT](https://img.shields.io/github/license/Victoare/DockerImageCheckerKing)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/Victoare/DockerImageCheckerKing?logo=github)](https://github.com/Victoare/DockerImageCheckerKing/releases/latest) [![Docker Hub](https://img.shields.io/docker/v/victoare/docker-image-checker-king?sort=date&label=docker%20hub&logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king) [![Image Size](https://img.shields.io/docker/image-size/victoare/docker-image-checker-king/latest?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king/tags) [![Docker Pulls](https://img.shields.io/docker/pulls/victoare/docker-image-checker-king?logo=docker)](https://hub.docker.com/r/victoare/docker-image-checker-king) [![License: MIT](https://img.shields.io/github/license/Victoare/DockerImageCheckerKing)](LICENSE)
 
 Web-based tool that checks your Docker containers for outdated images by comparing local digests against remote registry digests (therefore no unneccessry image pulls). Update notifications using Telegram. Supports one-click container updates via a "Clone & Swap" pattern.
 
@@ -14,6 +10,22 @@ Responsive design, light/dark themes
   <img src="other/Screenshot_desktop.png" width="70%" />
   <img src="other/Screenshot_mobile.png" width="20%" />
 </p>
+
+## Features
+
+- **No image pulls** — uses Docker Registry v2 API to fetch manifests and compare digests
+- **One-click updates** — "Clone & Swap" pattern: stop → rename → pull → create → start → remove old
+- **Resilient updates** — pull retries with backoff, automatic rollback, and a retry queue for updates started in bulk
+- **Anonymous auth** where possible (Docker Hub, ghcr.io, gcr.io, quay.io, ECR Public)
+- **Digest caching** — same image referenced by multiple containers is only checked once per run
+- **Real-time progress** via Server-Sent Events (SSE)
+- **Includes stopped containers** — always checks all containers, not just running ones
+- **Persistent results** — saved to disk and restored on page load
+- **Auto-check scheduler** — adapts interval based on Docker Hub rate limits
+- **Clickable stat cards** — filter by Up to date / Outdated / Unknown / Total
+- **Responsive table** — columns collapse progressively on smaller screens
+- **Telegram notifications** — get alerted when outdated containers are found *and* when an update succeeds or fails, with per-container overrides, multiple chats and editable templates.
+- **Dark/Light theme** — toggle persisted in localStorage with automatic support
 
 ## Quick Start
 
@@ -45,30 +57,6 @@ Open **http://localhost:8080** in your browser.
 
 Managing users and access is out of scope by design. This is a homelab-grade tool with full access to your Docker socket and no authentication of its own. Run it behind your own security layer (reverse proxy, VPN, firewall) and never put it directly on the open internet.
 
-## Build from source
-
-```bash
-git clone https://github.com/YOUR_USER/docker-image-checker-king.git
-cd docker-image-checker-king
-docker build -t docker-image-checker-king ./source
-```
-
-## Features
-
-- **No image pulls** — uses Docker Registry v2 API to fetch manifests and compare digests
-- **One-click updates** — "Clone & Swap" pattern: stop → rename → pull → create → start → remove old
-- **Resilient updates** — pull retries with backoff, automatic rollback, and a retry queue for updates started in bulk
-- **Anonymous auth** where possible (Docker Hub, ghcr.io, gcr.io, quay.io, ECR Public)
-- **Digest caching** — same image referenced by multiple containers is only checked once per run
-- **Real-time progress** via Server-Sent Events (SSE)
-- **Includes stopped containers** — always checks all containers, not just running ones
-- **Persistent results** — saved to disk and restored on page load
-- **Auto-check scheduler** — adapts interval based on Docker Hub rate limits
-- **Clickable stat cards** — filter by Up to date / Outdated / Unknown / Total
-- **Responsive table** — columns collapse progressively on smaller screens
-- **Telegram notifications** — get alerted when outdated containers are found *and* when an update succeeds or fails, with per-container overrides, multiple chats and editable templates.
-- **Dark/Light theme** — toggle persisted in localStorage with automatic support
-
 ## Updating containers
 
 Hitting **Update** on several rows at once starts all of them in parallel. That is the fast path, and most of
@@ -92,11 +80,8 @@ The update flow is built around that:
 ## Telegram Notifications
 
 Get notified on Telegram when outdated containers are detected.
-
 Edit the message template to suit your own liking.
-
 You can add your bot to multiple chats and set different containers to notify in different chats.
-
 Mute notification on selected containers.
 
 ### Setup
@@ -111,13 +96,6 @@ Mute notification on selected containers.
 4. Open the **Settings** (gear icon) in the web UI → click **Discover chats** to auto-detect available chat IDs
 5. Enable the chats you want to receive notifications on
 
-### Update reports
-
-Independently of the outdated alerts, each chat reports the outcome of container updates.
-**Successful** and **Failed** are two separate switches, both **on by default**, and both can be overridden
-per container (Default / On / Off) from the bell icon. The two messages have their own editable templates —
-open the template editor and switch tabs.
-
 ### Notification modes
 
 Each chat can be set to one of two modes:
@@ -125,7 +103,14 @@ Each chat can be set to one of two modes:
 | Mode | Behavior |
 |------|----------|
 | **Once** (default) | Sends one notification per outdated container; re-notifies when the local digest changes (e.g. after you update the container) |
-| **Every new version** | Sends a notification each time a new remote image version is detected for an outdated container |
+| **Every** | Sends a notification each time a new remote image version is detected for an outdated container |
+
+### Update reports
+
+Independently of the outdated alerts, each chat reports the outcome of container updates.
+**Successful** and **Failed** are two separate switches, both **on by default**, and both can be overridden
+per container (Default / On / Off) from the bell icon. The two messages have their own editable templates —
+open the template editor and switch tabs.
 
 ### Per-container overrides
 
@@ -133,17 +118,6 @@ Click the bell icon (🔔) on any container row to:
 - Disable notifications entirely for that container
 - Override the notification mode per chat
 - Fine-tune which chats receive alerts for specific containers
-
-## Registry authentication
-
-| Registry | Auth Method |
-|---|---|
-| Docker Hub (docker.io) | Anonymous token (100 req/6h per IP) |
-| ghcr.io | Anonymous for public images |
-| gcr.io / Artifact Registry | Anonymous for public images |
-| quay.io | Anonymous for public images |
-| public.ecr.aws | Anonymous for public images |
-| **Private registries** | **Requires `docker login` on the host** |
 
 ## Configuration
 
@@ -156,6 +130,17 @@ Click the bell icon (🔔) on any container row to:
 | `DOCKER_STREAM_STALL_MS` | `600000` | How long a pull stream may go completely silent before it is abandoned |
 | `PULL_ATTEMPTS` | `3` | Pull attempts per update attempt, with a 5s / 15s / 45s backoff |
 | `STOP_GRACE_SECONDS` | `30` | Seconds a container gets to exit on SIGTERM before it is killed (a ceiling, not a wait) |
+
+## Registry authentication
+
+| Registry | Auth Method |
+|---|---|
+| Docker Hub (docker.io) | Anonymous token (100 req/6h per IP) |
+| ghcr.io | Anonymous for public images |
+| gcr.io / Artifact Registry | Anonymous for public images |
+| quay.io | Anonymous for public images |
+| public.ecr.aws | Anonymous for public images |
+| **Private registries** | **Requires `docker login` on the host** |
 
 ## Metrics
 
@@ -189,6 +174,14 @@ A long scrape interval is enough — the values only change when a check runs. T
     summary: No image check completed in the last 24 hours
 ```
 
+## Build from source
+
+```bash
+git clone https://github.com/Victoare/DockerImageCheckerKing.git
+cd DockerImageCheckerKing
+docker build -t docker-image-checker-king ./source
+```
+
 ## Architecture
 
 ```
@@ -203,7 +196,7 @@ Browser  ──SSE──►  Express (Node.js)  ──unix socket──►  Dock
 
 Idea out of pure frustration by Victoare
 
-Mostly vibe coded using Claude Opus 4.6 by anthropic. 
+Mostly vibe coded using Claude Opus by anthropic. 
 
 Logo image made by ChatGPT
 
