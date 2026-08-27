@@ -14,6 +14,82 @@ const { recordUpdate } = require('./metrics');
 // ---------------------------------------------------------------------------
 const activeUpdates = {};
 
+// ---------------------------------------------------------------------------
+// Retry queue
+//
+// The first attempt is deliberately unthrottled: hitting "update" on four rows
+// fires four parallel swaps, which is fast when the registry and the daemon can
+// take it. When one of them fails — usually a timeout while several pulls
+// compete for the same layers — it is not failed outright but parked here, and
+// the queue drains strictly one at a time. Only a container that fails its
+// queued attempt as well ends up 'failed'.
+// ---------------------------------------------------------------------------
+const retryQueue = [];       // [{ container, image }]
+let queueDraining = false;
+
+// How many times the image pull itself is retried inside a single attempt.
+const PULL_ATTEMPTS = parseInt(process.env.PULL_ATTEMPTS, 10) || 3;
+const PULL_BACKOFF_MS = [5000, 15000, 45000];
+
+// Seconds the daemon gives a container to exit on SIGTERM before killing it.
+// This is a ceiling, not a wait: a container that exits immediately does not
+// cost any of it. Docker's own default is 10s, which is short for anything that
+// flushes state on shutdown (databases above all), so we are more patient.
+const STOP_GRACE_SECONDS = parseInt(process.env.STOP_GRACE_SECONDS, 10) || 30;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function queuePosition(container) {
+  const i = retryQueue.findIndex(j => j.container === container);
+  return i === -1 ? null : i + 1;
+}
+
+function enqueueRetry(containerName, image) {
+  const state = activeUpdates[containerName];
+  if (retryQueue.some(j => j.container === containerName)) return;
+  retryQueue.push({ container: containerName, image });
+  if (state) state.status = 'queued';
+  broadcastLog(containerName, {
+    time: new Date().toISOString(),
+    msg: `First attempt failed. Queued for a single retry (position ${queuePosition(containerName)}); the queue runs one update at a time.`,
+    type: 'warn'
+  });
+  // Sent without closing the stream: the browser keeps the same EventSource and
+  // just switches the row bar to its queued (purple) look.
+  broadcastStatus(containerName, 'queued', { keepOpen: true, queuePosition: queuePosition(containerName) });
+  appendActivityLog({ type: 'update-queued', container: containerName, image });
+  drainQueue();
+}
+
+async function drainQueue() {
+  if (queueDraining) return;
+  queueDraining = true;
+  try {
+    while (retryQueue.length) {
+      // Shifted before it runs, so the positions reported to everyone still
+      // waiting count only the ones actually still waiting.
+      const job = retryQueue.shift();
+      const state = activeUpdates[job.container];
+      if (!state) continue;
+      state.status = 'running';
+      broadcastStatus(job.container, 'running', { keepOpen: true });
+      broadcastLog(job.container, { time: new Date().toISOString(), msg: '— Retry attempt (queued) —', type: 'info' });
+      try {
+        await runUpdate(job.container, job.image, 2);
+      } catch (e) {
+        console.warn('[update] Queued retry crashed for', job.container, e.message);
+        finishUpdate(job.container, 'failed');
+      }
+      // Renumber whoever is still waiting so their row keeps an honest position.
+      for (const j of retryQueue) {
+        broadcastStatus(j.container, 'queued', { keepOpen: true, queuePosition: queuePosition(j.container) });
+      }
+    }
+  } finally {
+    queueDraining = false;
+  }
+}
+
 function broadcastLog(container, line) {
   const state = activeUpdates[container];
   if (!state) return;
@@ -30,19 +106,37 @@ function broadcastLog(container, line) {
   for (const client of state.clients) try { client.write(payload); } catch { /* disconnected */ }
 }
 
-function broadcastStatus(container, status) {
+// Terminal statuses close the stream; intermediate ones ('queued', a queued
+// attempt going back to 'running') keep it open so the browser follows the
+// whole journey on one connection.
+function broadcastStatus(container, status, { keepOpen = false, queuePosition = null } = {}) {
   const state = activeUpdates[container];
   if (!state) return;
-  const payload = `event: status\ndata: ${JSON.stringify({ status })}\n\n`;
-  for (const client of state.clients) try { client.write(payload); client.end(); } catch { /* skip */ }
-  state.clients = [];
+  const payload = `event: status\ndata: ${JSON.stringify({ status, queuePosition })}\n\n`;
+  for (const client of state.clients) {
+    try { client.write(payload); if (!keepOpen) client.end(); } catch { /* skip */ }
+  }
+  if (!keepOpen) state.clients = [];
 }
 
 // ---------------------------------------------------------------------------
 // CORE: "Clone & Swap" Update Logic (Watchtower style)
 // ---------------------------------------------------------------------------
-async function runUpdate(containerName, image) {
+// Attempt 1 is the free-for-all one; a failure there parks the container in the
+// retry queue instead of failing it. Attempt 2 runs alone from that queue, and
+// its failure is final.
+async function runUpdate(containerName, image, attempt = 1) {
+  const succeeded = await performUpdate(containerName, image);
+  if (succeeded) return finishUpdate(containerName, 'done');
+  if (attempt === 1) return enqueueRetry(containerName, image);
+  return finishUpdate(containerName, 'failed');
+}
+
+// Runs one full Clone & Swap. Returns true on success, false on failure.
+async function performUpdate(containerName, image) {
   const log = (msg, type = 'info', id, bar) => broadcastLog(containerName, { time: new Date().toISOString(), msg, type, ...(id ? { id } : {}), ...(bar ? { bar } : {}) });
+
+  let oldInfo = null, oldName = null, newId = null, wasRunning = false;
 
   try {
     // 1. PULL IMAGE
@@ -52,121 +146,150 @@ async function runUpdate(containerName, image) {
     } else {
       let fromImage = (parsed.registry === 'docker.io') ? (parsed.repo.startsWith('library/') ? parsed.repo.substring(8) : parsed.repo) : `${parsed.registry}/${parsed.repo}`;
       log(`Pulling ${fromImage}:${parsed.tag} …`, 'info');
-      let failed = false;
-      // The Docker pull stream emits one event per layer status change (often
-      // hundreds per second). Instead of one log line each, we keep per-layer
-      // state and render in-place updating progress bars: one aggregate bar
-      // ('pull-overall') plus one bar per layer ('pull-layer-<id>'). Each layer
-      // tracks its download and extract byte progress separately.
-      const fmtBytes = (n) => {
-        if (n == null) return '';
-        const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let i = 0, v = n;
-        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-        return (i === 0 ? v : (v >= 10 ? Math.round(v) : v.toFixed(1))) + u[i];
-      };
-      const shortId = (id) => id.length > 12 ? id.slice(0, 12) : id;
-      const layers = {};        // id -> { phase, dlCur, dlTot, exCur, exTot, terminal }
-      const seenMessages = new Set();
-      const lastEmit = {};      // log id -> last emitted pct (throttle)
-
-      const layerPct = (L) => {
-        if (L.phase === 'done' || L.phase === 'downloaded') return 100;
-        if (L.phase === 'extracting') return L.exTot ? Math.round(L.exCur / L.exTot * 100) : 0;
-        if (L.phase === 'downloading') return L.dlTot ? Math.round(L.dlCur / L.dlTot * 100) : 0;
-        return 0;
-      };
-      const layerLabel = (L) => ({
-        pending: 'Waiting', downloading: 'Downloading',
-        downloaded: 'Download complete', extracting: 'Extracting',
-        done: L.terminal || 'Pull complete'
-      })[L.phase] || '';
-      const layerRight = (L) => {
-        if (L.phase === 'downloading' && L.dlTot) return `${fmtBytes(L.dlCur)} / ${fmtBytes(L.dlTot)}`;
-        if (L.phase === 'extracting' && L.exTot) return `${Math.round(L.exCur / L.exTot * 100)}%`;
-        return '';
-      };
-      const emitLayer = (id) => {
-        const L = layers[id], key = 'pull-layer-' + id, pct = layerPct(L);
-        const sig = L.phase + ':' + pct;
-        if (lastEmit[key] === sig) return;
-        lastEmit[key] = sig;
-        log('', L.phase === 'done' ? 'ok' : 'info', key, { pct, left: `${shortId(id)}  ${layerLabel(L)}`, right: layerRight(L) });
-      };
-      const emitOverall = (force) => {
-        const ids = Object.keys(layers);
-        if (!ids.length) return;
-        let frac = 0, done = 0, sumCur = 0, sumTot = 0;
-        for (const id of ids) {
-          const L = layers[id];
-          if (L.phase === 'done') { frac += 1; done++; }
-          else if (L.phase === 'extracting') frac += 0.5 + 0.5 * (L.exTot ? L.exCur / L.exTot : 0);
-          else if (L.phase === 'downloaded') frac += 0.5;
-          else if (L.phase === 'downloading') frac += 0.5 * (L.dlTot ? L.dlCur / L.dlTot : 0);
-          if (L.dlTot) { sumCur += L.dlCur; sumTot += L.dlTot; }
+      let pullOk = false;
+      // A pull is idempotent, so a transient failure (timeout, reset socket,
+      // registry hiccup) is worth simply retrying before the whole update is
+      // written off. The swap steps below get no such treatment.
+      for (let pullAttempt = 1; pullAttempt <= PULL_ATTEMPTS && !pullOk; pullAttempt++) {
+        if (pullAttempt > 1) {
+          const wait = PULL_BACKOFF_MS[Math.min(pullAttempt - 2, PULL_BACKOFF_MS.length - 1)];
+          log(`Retrying pull in ${Math.round(wait / 1000)}s (attempt ${pullAttempt}/${PULL_ATTEMPTS}) …`, 'warn');
+          await sleep(wait);
         }
-        const pct = Math.round(frac / ids.length * 100);
-        // Throttle on pct AND done: fractional credit can push pct to 100 while
-        // layers are still extracting, so keying on pct alone would freeze the
-        // "X / Y complete" label once that happens.
-        const sig = pct + ':' + done;
-        if (!force && lastEmit['pull-overall'] === sig) return;
-        lastEmit['pull-overall'] = sig;
-        const right = sumTot ? `${fmtBytes(sumCur)} / ${fmtBytes(sumTot)}` : '';
-        log('', done === ids.length ? 'ok' : 'info', 'pull-overall', { pct, left: `Layers  ${done} / ${ids.length} complete`, right });
-      };
+        let failed = false;
+        // The Docker pull stream emits one event per layer status change (often
+        // hundreds per second). Instead of one log line each, we keep per-layer
+        // state and render in-place updating progress bars: one aggregate bar
+        // ('pull-overall') plus one bar per layer ('pull-layer-<id>'). Each layer
+        // tracks its download and extract byte progress separately.
+        const fmtBytes = (n) => {
+          if (n == null) return '';
+          const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+          let i = 0, v = n;
+          while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+          return (i === 0 ? v : (v >= 10 ? Math.round(v) : v.toFixed(1))) + u[i];
+        };
+        const shortId = (id) => id.length > 12 ? id.slice(0, 12) : id;
+        const layers = {};        // id -> { phase, dlCur, dlTot, exCur, exTot, terminal }
+        const seenMessages = new Set();
+        const lastEmit = {};      // log id -> last emitted pct (throttle)
 
-      const pullCode = await dockerApi('POST', `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(parsed.tag)}`, {
-        stream: (chunk) => {
-          if (chunk.error) { log(`Pull error: ${chunk.error}`, 'error'); failed = true; return; }
-          if (!chunk.status) return;
-          if (!chunk.id) {
-            // Non-layer status (e.g. "Pulling from repo", "Digest: …", "Status: …"); log once.
-            if (!seenMessages.has(chunk.status)) { seenMessages.add(chunk.status); log(chunk.status, 'info'); }
-            return;
+        const layerPct = (L) => {
+          if (L.phase === 'done' || L.phase === 'downloaded') return 100;
+          if (L.phase === 'extracting') return L.exTot ? Math.round(L.exCur / L.exTot * 100) : 0;
+          if (L.phase === 'downloading') return L.dlTot ? Math.round(L.dlCur / L.dlTot * 100) : 0;
+          return 0;
+        };
+        const layerLabel = (L) => ({
+          pending: 'Waiting', downloading: 'Downloading',
+          downloaded: 'Download complete', extracting: 'Extracting',
+          done: L.terminal || 'Pull complete'
+        })[L.phase] || '';
+        const layerRight = (L) => {
+          if (L.phase === 'downloading' && L.dlTot) return `${fmtBytes(L.dlCur)} / ${fmtBytes(L.dlTot)}`;
+          if (L.phase === 'extracting' && L.exTot) return `${Math.round(L.exCur / L.exTot * 100)}%`;
+          return '';
+        };
+        const emitLayer = (id) => {
+          const L = layers[id], key = 'pull-layer-' + id, pct = layerPct(L);
+          const sig = L.phase + ':' + pct;
+          if (lastEmit[key] === sig) return;
+          lastEmit[key] = sig;
+          log('', L.phase === 'done' ? 'ok' : 'info', key, { pct, left: `${shortId(id)}  ${layerLabel(L)}`, right: layerRight(L) });
+        };
+        const emitOverall = (force) => {
+          const ids = Object.keys(layers);
+          if (!ids.length) return;
+          let frac = 0, done = 0, sumCur = 0, sumTot = 0;
+          for (const id of ids) {
+            const L = layers[id];
+            if (L.phase === 'done') { frac += 1; done++; }
+            else if (L.phase === 'extracting') frac += 0.5 + 0.5 * (L.exTot ? L.exCur / L.exTot : 0);
+            else if (L.phase === 'downloaded') frac += 0.5;
+            else if (L.phase === 'downloading') frac += 0.5 * (L.dlTot ? L.dlCur / L.dlTot : 0);
+            if (L.dlTot) { sumCur += L.dlCur; sumTot += L.dlTot; }
           }
-          const id = chunk.id;
-          const pd = chunk.progressDetail || {};
-          // Build on a copy and only commit to `layers` once we've handled the
-          // status — otherwise an unmapped status on a fresh id would register a
-          // phantom 'pending' layer that inflates the total but never completes.
-          const L = layers[id] || { phase: 'pending', dlCur: 0, dlTot: 0, exCur: 0, exTot: 0 };
-          switch (chunk.status) {
-            case 'Pulling fs layer': case 'Waiting': L.phase = 'pending'; break;
-            case 'Downloading': L.phase = 'downloading'; if (pd.current != null) L.dlCur = pd.current; if (pd.total) L.dlTot = pd.total; break;
-            case 'Verifying Checksum': L.phase = 'downloading'; break;
-            case 'Download complete': L.phase = 'downloaded'; if (L.dlTot) L.dlCur = L.dlTot; break;
-            case 'Extracting': L.phase = 'extracting'; if (pd.current != null) L.exCur = pd.current; if (pd.total) L.exTot = pd.total; break;
-            case 'Pull complete': L.phase = 'done'; L.terminal = 'Pull complete'; break;
-            case 'Already exists': L.phase = 'done'; L.terminal = 'Already exists'; break;
-            default: return; // unknown status — ignore, don't register a phantom layer
-          }
-          layers[id] = L;
-          emitOverall();   // emitted first so the aggregate bar stays on top
-          emitLayer(id);
+          const pct = Math.round(frac / ids.length * 100);
+          // Throttle on pct AND done: fractional credit can push pct to 100 while
+          // layers are still extracting, so keying on pct alone would freeze the
+          // "X / Y complete" label once that happens.
+          const sig = pct + ':' + done;
+          if (!force && lastEmit['pull-overall'] === sig) return;
+          lastEmit['pull-overall'] = sig;
+          const right = sumTot ? `${fmtBytes(sumCur)} / ${fmtBytes(sumTot)}` : '';
+          log('', done === ids.length ? 'ok' : 'info', 'pull-overall', { pct, left: `Layers  ${done} / ${ids.length} complete`, right });
+        };
+
+        let pullCode = 0;
+        try {
+          pullCode = await dockerApi('POST', `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(parsed.tag)}`, {
+            stream: (chunk) => {
+              if (chunk.error) { log(`Pull error: ${chunk.error}`, 'error'); failed = true; return; }
+              // A non-200 from the daemon (unknown tag, auth failure, registry
+              // down) arrives as a bare {message}. Without this the log showed
+              // the retries but never said what went wrong.
+              if (chunk.message && !chunk.status) { log(`Pull error: ${chunk.message}`, 'warn'); failed = true; return; }
+              if (!chunk.status) return;
+              if (!chunk.id) {
+                // Non-layer status (e.g. "Pulling from repo", "Digest: …", "Status: …"); log once.
+                if (!seenMessages.has(chunk.status)) { seenMessages.add(chunk.status); log(chunk.status, 'info'); }
+                return;
+              }
+              const id = chunk.id;
+              const pd = chunk.progressDetail || {};
+              // Build on a copy and only commit to `layers` once we've handled the
+              // status — otherwise an unmapped status on a fresh id would register a
+              // phantom 'pending' layer that inflates the total but never completes.
+              const L = layers[id] || { phase: 'pending', dlCur: 0, dlTot: 0, exCur: 0, exTot: 0 };
+              switch (chunk.status) {
+                case 'Pulling fs layer': case 'Waiting': L.phase = 'pending'; break;
+                case 'Downloading': L.phase = 'downloading'; if (pd.current != null) L.dlCur = pd.current; if (pd.total) L.dlTot = pd.total; break;
+                case 'Verifying Checksum': L.phase = 'downloading'; break;
+                case 'Download complete': L.phase = 'downloaded'; if (L.dlTot) L.dlCur = L.dlTot; break;
+                case 'Extracting': L.phase = 'extracting'; if (pd.current != null) L.exCur = pd.current; if (pd.total) L.exTot = pd.total; break;
+                case 'Pull complete': L.phase = 'done'; L.terminal = 'Pull complete'; break;
+                case 'Already exists': L.phase = 'done'; L.terminal = 'Already exists'; break;
+                default: return; // unknown status — ignore, don't register a phantom layer
+              }
+              layers[id] = L;
+              emitOverall();   // emitted first so the aggregate bar stays on top
+              emitLayer(id);
+            }
+          });
+        } catch (e) {
+          log(`Pull error: ${e.message}`, 'warn');
+          failed = true;
         }
-      });
-      if (failed || pullCode !== 200) { log('Pull failed.', 'error'); finishUpdate(containerName, 'failed'); return; }
-      emitOverall(true);   // force a final flush so the aggregate bar always lands on 100%
+        if (!failed && pullCode === 200) {
+          pullOk = true;
+          emitOverall(true);   // force a final flush so the aggregate bar always lands on 100%
+        } else if (pullAttempt >= PULL_ATTEMPTS) {
+          log(`Pull failed after ${PULL_ATTEMPTS} attempt(s).`, 'error');
+        }
+      }
+      if (!pullOk) return false;
       log('Pull complete.', 'ok');
     }
 
     // 2. INSPECT OLD CONTAINER
     log(`Inspecting "${containerName}" …`, 'info');
-    const oldInfo = await dockerApi('GET', `/containers/${encodeURIComponent(containerName)}/json`);
-    if (!oldInfo || !oldInfo.Id) { log('Failed to inspect container.', 'error'); finishUpdate(containerName, 'failed'); return; }
-    const wasRunning = oldInfo.State && oldInfo.State.Running;
+    oldInfo = await dockerApi('GET', `/containers/${encodeURIComponent(containerName)}/json`);
+    if (!oldInfo || !oldInfo.Id) { log('Failed to inspect container.', 'error'); return false; }
+    wasRunning = !!(oldInfo.State && oldInfo.State.Running);
 
     // 3. STOP OLD (only if running)
     if (wasRunning) {
       log(`Stopping "${containerName}" …`, 'info');
-      await dockerApi('POST', `/containers/${oldInfo.Id}/stop?t=10`);
+      // The daemon waits t seconds for SIGTERM before it kills, so the HTTP
+      // call itself can legitimately outlive the default timeout — give it the
+      // grace period plus room to answer.
+      await dockerApi('POST', `/containers/${oldInfo.Id}/stop?t=${STOP_GRACE_SECONDS}`, { timeout: (STOP_GRACE_SECONDS + 30) * 1000 });
     } else {
       log(`Container "${containerName}" was not running, skipping stop.`, 'info');
     }
 
     // 4. RENAME OLD
-    const oldName = containerName + '_old_' + Date.now();
+    oldName = containerName + '_old_' + Date.now();
     log(`Renaming old container to "${oldName}" …`, 'info');
     await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(oldName)}`);
 
@@ -218,25 +341,23 @@ async function runUpdate(containerName, image) {
     // Remove runtime-only or conflicting fields
     delete createBody.Hostname;
 
-    const createRes = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(containerName)}`, { body: createBody });
+    const createRes = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(containerName)}`, { body: createBody, timeout: 60000 });
     if (createRes.statusCode !== 201) {
       log(`Create failed (HTTP ${createRes.statusCode}): ${JSON.stringify(createRes.body)}`, 'error');
       log(`Rollback: Renaming "${oldName}" back to "${containerName}" …`, 'warn');
       await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(containerName)}`);
       await dockerApi('POST', `/containers/${oldInfo.Id}/start`);
-      finishUpdate(containerName, 'failed');
-      return;
+      return false;
     }
-    const newId = createRes.body.Id;
+    newId = createRes.body.Id;
 
     // 6. START NEW (only if it was running before)
     if (wasRunning) {
       log(`Starting new container …`, 'info');
-      const startRes = await dockerApi('POST', `/containers/${newId}/start`);
+      const startRes = await dockerApi('POST', `/containers/${newId}/start`, { timeout: 60000 });
       if (startRes.statusCode < 200 || startRes.statusCode >= 300) {
         log(`Start failed: ${JSON.stringify(startRes.body)}`, 'error');
-        finishUpdate(containerName, 'failed');
-        return;
+        return false;
       }
     } else {
       log(`Container was not running before update, leaving it stopped.`, 'info');
@@ -247,11 +368,11 @@ async function runUpdate(containerName, image) {
     await dockerApi('DELETE', `/containers/${oldInfo.Id}?v=true`);
 
     log(`Update successful!`, 'ok');
-    finishUpdate(containerName, 'done');
+    return true;
 
   } catch (err) {
     log(`Error: ${err.message}`, 'error');
-    finishUpdate(containerName, 'failed');
+    return false;
   }
 }
 
@@ -316,4 +437,4 @@ async function refreshCacheAfterUpdate(containerName, image) {
   } catch (e) { console.warn('[cache] Failed to refresh after update:', e.message); }
 }
 
-module.exports = { activeUpdates, runUpdate, broadcastLog, broadcastStatus };
+module.exports = { activeUpdates, runUpdate, broadcastLog, broadcastStatus, queuePosition, retryQueue };

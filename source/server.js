@@ -11,7 +11,7 @@ const {
   sendTelegramMessage, sendTelegramNotifications,
   loadContainerNotify, saveContainerNotify, getNotifyInfo
 } = require('./telegram');
-const { activeUpdates, runUpdate } = require('./updater');
+const { activeUpdates, runUpdate, queuePosition } = require('./updater');
 const { renderMetrics, recordCheckDuration } = require('./metrics');
 
 const app = express();
@@ -412,13 +412,18 @@ app.get('/api/update-logs', (_req, res) => res.json(loadUpdateLogs()));
 
 app.get('/api/update-status', (_req, res) => {
   const status = {};
-  for (const [name, state] of Object.entries(activeUpdates)) status[name] = { status: state.status, image: state.image };
+  for (const [name, state] of Object.entries(activeUpdates)) {
+    status[name] = { status: state.status, image: state.image, queuePosition: queuePosition(name) };
+  }
   res.json(status);
 });
 
 app.post('/api/update/:container', async (req, res) => {
   const name = req.params.container;
-  if (activeUpdates[name] && activeUpdates[name].status === 'running') return res.status(409).json({ error: 'Update in progress' });
+  const existing = activeUpdates[name];
+  if (existing && (existing.status === 'running' || existing.status === 'queued')) {
+    return res.status(409).json({ error: existing.status === 'queued' ? 'Update queued for retry' : 'Update in progress' });
+  }
   let image = req.body && req.body.image;
   if (!image) {
     try {
@@ -441,7 +446,12 @@ app.get('/api/update/:container/stream', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   if (!state) { res.write(`event: status\ndata: ${JSON.stringify({ status: 'none' })}\n\n`); res.end(); return; }
   for (const line of state.log) res.write(`event: log\ndata: ${JSON.stringify(line)}\n\n`);
-  if (state.status !== 'running') { res.write(`event: status\ndata: ${JSON.stringify({ status: state.status })}\n\n`); res.end(); return; }
+  // 'running' and 'queued' are both live: the client stays attached and is told
+  // which one it is, so a reconnect lands on the right row animation.
+  if (state.status !== 'running' && state.status !== 'queued') {
+    res.write(`event: status\ndata: ${JSON.stringify({ status: state.status })}\n\n`); res.end(); return;
+  }
+  res.write(`event: status\ndata: ${JSON.stringify({ status: state.status, queuePosition: queuePosition(name) })}\n\n`);
   state.clients.push(res);
   req.on('close', () => { if (state.clients) { const idx = state.clients.indexOf(res); if (idx !== -1) state.clients.splice(idx, 1); } });
 });

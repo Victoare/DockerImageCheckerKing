@@ -57,6 +57,7 @@ docker build -t docker-image-checker-king ./source
 
 - **No image pulls** — uses Docker Registry v2 API to fetch manifests and compare digests
 - **One-click updates** — "Clone & Swap" pattern: stop → rename → pull → create → start → remove old
+- **Resilient updates** — pull retries with backoff and a retry queue for updates started in bulk
 - **Anonymous auth** where possible (Docker Hub, ghcr.io, gcr.io, quay.io, ECR Public)
 - **Digest caching** — same image referenced by multiple containers is only checked once per run
 - **Real-time progress** via Server-Sent Events (SSE)
@@ -67,6 +68,21 @@ docker build -t docker-image-checker-king ./source
 - **Responsive table** — columns collapse progressively on smaller screens
 - **Telegram notifications** — get alerted when outdated containers are found, with per-container overrides, multiple chats and editable template.
 - **Dark/Light theme** — toggle persisted in localStorage with automatic support
+
+## Updating containers
+
+Hitting **Update** on several rows at once starts all of them in parallel. That is the fast path, and most of
+the time it is also the right one — but the daemon deduplicates layers shared between concurrent pulls, so one
+pull can sit silent for minutes while another downloads the same layer, and a registry under load will simply
+be slow.
+
+The update flow is built around that:
+
+- **Generous stream timeouts** — a pull is only abandoned after 10 minutes of complete silence, not 30 seconds
+- **Pull retries** — the image pull is retried up to 3 times with a 5s / 15s / 45s backoff before the attempt is given up
+- **Retry queue** — an update that still fails is not marked failed; it is parked in a queue that drains **one
+  container at a time**. The row shows a purple sweeping bar while it waits. Only a container that fails its
+  queued attempt too ends up failed.
 
 ## Telegram Notifications
 
@@ -124,6 +140,10 @@ Click the bell icon (🔔) on any container row to:
 | `AUTO_CHECK_FAST_MINUTES` | `60` | Auto-check interval when rate limits are healthy |
 | `AUTO_CHECK_MINUTES` | `360` | Auto-check interval when rate limits are low |
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token for notifications (optional) |
+| `DOCKER_TIMEOUT_MS` | `30000` | Idle timeout for ordinary Docker API calls |
+| `DOCKER_STREAM_STALL_MS` | `600000` | How long a pull stream may go completely silent before it is abandoned |
+| `PULL_ATTEMPTS` | `3` | Pull attempts per update attempt, with a 5s / 15s / 45s backoff |
+| `STOP_GRACE_SECONDS` | `30` | Seconds a container gets to exit on SIGTERM before it is killed (a ceiling, not a wait) |
 
 ## Metrics
 

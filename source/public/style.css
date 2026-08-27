@@ -27,6 +27,8 @@
     --red: #ef4444;
     --red-dim: rgba(239, 68, 68, 0.1);
     --orange: #f97316;
+    --purple: #a855f7;
+    --purple-dim: rgba(168, 85, 247, 0.14);
     --gray: #6b7280;
     --grid-color: rgba(59, 130, 246, 0.03);
     --row-hover: rgba(59, 130, 246, 0.04);
@@ -62,6 +64,8 @@
     --red: #dc2626;
     --red-dim: rgba(220, 38, 38, 0.07);
     --orange: #ea580c;
+    --purple: #9333ea;
+    --purple-dim: rgba(147, 51, 234, 0.1);
     --gray: #6b7280;
     --grid-color: rgba(37, 99, 235, 0.04);
     --row-hover: rgba(37, 99, 235, 0.04);
@@ -1095,6 +1099,28 @@
     background: var(--red-dim);
   }
 
+  /* Parked in the retry queue: nothing is downloading for this container, so
+     there is no percentage to show — a purple band travels back and forth
+     instead. The fill itself stays at 0 width. */
+  .row-progress.queued {
+    background: var(--purple-dim);
+  }
+
+  .row-progress.queued::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 35%;
+    background: linear-gradient(90deg, transparent, var(--purple), transparent);
+    animation: rowProgressQueued 1.8s ease-in-out infinite alternate;
+  }
+
+  @keyframes rowProgressQueued {
+    0%   { left: -35%; }
+    100% { left: 100%; }
+  }
+
   .row-progress.error .row-progress-fill {
     background: var(--red);
   }
@@ -1272,6 +1298,12 @@
   .update-status-failed {
     background: var(--red-dim);
     color: var(--red);
+  }
+
+  .update-status-queued {
+    background: var(--purple-dim);
+    color: var(--purple);
+    animation: pulse-text 1.8s ease-in-out infinite;
   }
 
   @keyframes pulse-text {
@@ -1832,10 +1864,6 @@
 .cnotify-warning strong { font-weight: 600; }
 
 @media (max-width: 639px) {
-  .cnotify-chat-row {
-    flex-wrap: wrap;
-  }
-
   .cnotify-mode {
     width: 100%;
     padding-left: 46px;

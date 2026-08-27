@@ -61,10 +61,12 @@ function renderBar(div, bar) {
   fill.style.width = pct + '%';
 }
 
-function setUpdateStatus(idx, status) {
+// `status` drives the styling; `label` is what the badge reads. They differ for
+// the queue, where the badge also carries the position but the class must not.
+function setUpdateStatus(idx, status, label) {
   var el = document.getElementById('update-log-status-' + idx);
   if (!el) return;
-  el.textContent = status;
+  el.textContent = label || status;
   el.className = 'update-log-status update-status-' + status;
 }
 
@@ -124,7 +126,7 @@ function hideRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
   delete rowProgressState[idx];
   if (!bar) return;
-  bar.classList.remove('active', 'error', 'waiting');
+  bar.classList.remove('active', 'error', 'waiting', 'queued');
   setRowProgress(idx, 0);
 }
 
@@ -132,8 +134,28 @@ function hideRowProgress(idx) {
 function errorRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
   if (!bar) return;
-  bar.classList.remove('waiting');
+  bar.classList.remove('waiting', 'queued');
   bar.classList.add('active', 'error');
+}
+
+// Waiting in the retry queue: an indeterminate purple sweep, no percentage —
+// nothing is happening for this container yet.
+function queuedRowProgress(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (!bar) return;
+  bar.classList.remove('waiting', 'error');
+  bar.classList.add('active', 'queued');
+  setRowProgress(idx, 0);
+}
+
+// Coming back out of the queue (or starting fresh) — back to the normal bar.
+function runningRowProgress(idx) {
+  var bar = document.getElementById('row-progress-' + idx);
+  if (!bar) return;
+  bar.classList.remove('queued', 'error');
+  bar.classList.add('active', 'waiting');
+  rowProgressState[idx] = { passive: false, pct: 0 };
+  setRowProgress(idx, 0);
 }
 
 function setUpdateButtonState(idx, state) {
@@ -180,7 +202,7 @@ function executeStartUpdate(container, image, idx) {
   })
     .then(function (r) {
       if (r.status === 409) {
-        addUpdateLog(idx, { msg: 'Update already in progress, reconnecting…', type: 'warn' });
+        addUpdateLog(idx, { msg: 'Update already in progress or queued, reconnecting…', type: 'warn' });
       } else if (!r.ok) {
         return r.json().then(function (d) {
           addUpdateLog(idx, { msg: 'Failed to start update: ' + (d.error || r.status), type: 'error' });
@@ -207,6 +229,22 @@ function subscribeUpdateStream(container, idx) {
 
   src.addEventListener('status', function (e) {
     var data = JSON.parse(e.data);
+
+    // 'queued' and 'running' are intermediate: the server keeps the stream open
+    // and the row just changes appearance.
+    if (data.status === 'queued') {
+      queuedRowProgress(idx);
+      setUpdateStatus(idx, 'queued', data.queuePosition ? 'queued #' + data.queuePosition : 'queued');
+      setUpdateButtonState(idx, 'running');
+      return;
+    }
+    if (data.status === 'running') {
+      runningRowProgress(idx);
+      setUpdateStatus(idx, 'running');
+      setUpdateButtonState(idx, 'running');
+      return;
+    }
+
     src.close();
     if (data.status === 'none') {
       hideRowProgress(idx);
@@ -270,12 +308,18 @@ function reconnectActiveUpdates() {
       if (!statuses) return;
       for (var container in statuses) {
         if (!statuses.hasOwnProperty(container)) continue;
-        if (statuses[container].status === 'running') {
+        var st = statuses[container].status;
+        if (st === 'running' || st === 'queued') {
           var idx = getIdxByContainer(container);
           if (idx === null) continue;
-          showRowProgress(idx);
+          if (st === 'queued') {
+            queuedRowProgress(idx);
+            setUpdateStatus(idx, 'queued', statuses[container].queuePosition ? 'queued #' + statuses[container].queuePosition : 'queued');
+          } else {
+            showRowProgress(idx);
+            setUpdateStatus(idx, 'running');
+          }
           setUpdateButtonState(idx, 'running');
-          setUpdateStatus(idx, 'running');
           subscribeUpdateStream(container, idx);
         }
       }
