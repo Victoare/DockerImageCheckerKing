@@ -132,11 +132,41 @@ async function runUpdate(containerName, image, attempt = 1) {
   return finishUpdate(containerName, 'failed');
 }
 
-// Runs one full Clone & Swap. Returns true on success, false on failure.
+// Runs one full Clone & Swap. Returns true on success; on failure it has
+// already restored the previous container (as far as it could) and logged why.
 async function performUpdate(containerName, image) {
   const log = (msg, type = 'info', id, bar) => broadcastLog(containerName, { time: new Date().toISOString(), msg, type, ...(id ? { id } : {}), ...(bar ? { bar } : {}) });
 
-  let oldInfo = null, oldName = null, newId = null, wasRunning = false;
+  // Everything the rollback needs. `renamed` is the point of no return: past it
+  // the original container no longer answers to its own name, so any failure
+  // has to put it back rather than just bailing out.
+  let oldInfo = null, oldName = null, newId = null, renamed = false, wasRunning = false;
+
+  // Puts the original container back under its own name and restarts it if it
+  // had been running. Best effort — every step is reported, never thrown.
+  const rollback = async (reason) => {
+    if (!renamed || !oldInfo) return;
+    log(`Rollback (${reason}): restoring "${containerName}" …`, 'warn');
+    try {
+      if (newId) {
+        await dockerApi('POST', `/containers/${newId}/stop?t=5`, { timeout: 20000 });
+        await dockerApi('DELETE', `/containers/${newId}?v=false`);
+        log('Removed the half-created new container.', 'warn');
+      }
+    } catch (e) { log(`Could not remove the new container: ${e.message}`, 'error'); }
+    try {
+      await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(containerName)}`);
+      renamed = false;
+      if (wasRunning) {
+        await dockerApi('POST', `/containers/${oldInfo.Id}/start`, { timeout: 60000 });
+        log('Previous container restored and started.', 'warn');
+      } else {
+        log('Previous container restored (left stopped, as it was).', 'warn');
+      }
+    } catch (e) {
+      log(`ROLLBACK FAILED: the previous container is still named "${oldName}" (${e.message}). Manual action required.`, 'error');
+    }
+  };
 
   try {
     // 1. PULL IMAGE
@@ -283,7 +313,13 @@ async function performUpdate(containerName, image) {
       // The daemon waits t seconds for SIGTERM before it kills, so the HTTP
       // call itself can legitimately outlive the default timeout — give it the
       // grace period plus room to answer.
-      await dockerApi('POST', `/containers/${oldInfo.Id}/stop?t=${STOP_GRACE_SECONDS}`, { timeout: (STOP_GRACE_SECONDS + 30) * 1000 });
+      const stopRes = await dockerApi('POST', `/containers/${oldInfo.Id}/stop?t=${STOP_GRACE_SECONDS}`, { timeout: (STOP_GRACE_SECONDS + 30) * 1000 });
+      // 304 = already stopped, which is fine. Anything else means the container
+      // may still be running, and renaming it now would be the worst outcome.
+      if (stopRes.statusCode !== 204 && stopRes.statusCode !== 304) {
+        log(`Stop failed (HTTP ${stopRes.statusCode}): ${JSON.stringify(stopRes.body)}`, 'error');
+        return false;
+      }
     } else {
       log(`Container "${containerName}" was not running, skipping stop.`, 'info');
     }
@@ -291,7 +327,13 @@ async function performUpdate(containerName, image) {
     // 4. RENAME OLD
     oldName = containerName + '_old_' + Date.now();
     log(`Renaming old container to "${oldName}" …`, 'info');
-    await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(oldName)}`);
+    const renameRes = await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(oldName)}`);
+    if (renameRes.statusCode < 200 || renameRes.statusCode >= 300) {
+      log(`Rename failed (HTTP ${renameRes.statusCode}): ${JSON.stringify(renameRes.body)}`, 'error');
+      if (wasRunning) { try { await dockerApi('POST', `/containers/${oldInfo.Id}/start`, { timeout: 60000 }); } catch { /* reported below */ } }
+      return false;
+    }
+    renamed = true;
 
     // 5. CREATE NEW (CLONE CONFIG)
     log(`Creating new container "${containerName}" …`, 'info');
@@ -344,9 +386,7 @@ async function performUpdate(containerName, image) {
     const createRes = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(containerName)}`, { body: createBody, timeout: 60000 });
     if (createRes.statusCode !== 201) {
       log(`Create failed (HTTP ${createRes.statusCode}): ${JSON.stringify(createRes.body)}`, 'error');
-      log(`Rollback: Renaming "${oldName}" back to "${containerName}" …`, 'warn');
-      await dockerApi('POST', `/containers/${oldInfo.Id}/rename?name=${encodeURIComponent(containerName)}`);
-      await dockerApi('POST', `/containers/${oldInfo.Id}/start`);
+      await rollback('create failed');
       return false;
     }
     newId = createRes.body.Id;
@@ -357,6 +397,7 @@ async function performUpdate(containerName, image) {
       const startRes = await dockerApi('POST', `/containers/${newId}/start`, { timeout: 60000 });
       if (startRes.statusCode < 200 || startRes.statusCode >= 300) {
         log(`Start failed: ${JSON.stringify(startRes.body)}`, 'error');
+        await rollback('start failed');
         return false;
       }
     } else {
@@ -365,13 +406,21 @@ async function performUpdate(containerName, image) {
 
     // 7. CLEANUP OLD
     log(`Deleting old container …`, 'info');
-    await dockerApi('DELETE', `/containers/${oldInfo.Id}?v=true`);
+    // From here the swap has succeeded; a failure to delete the leftover is
+    // untidy but must not roll a working container back.
+    renamed = false;
+    try {
+      await dockerApi('DELETE', `/containers/${oldInfo.Id}?v=true`);
+    } catch (e) {
+      log(`Could not delete the old container "${oldName}" (${e.message}) — remove it manually.`, 'warn');
+    }
 
     log(`Update successful!`, 'ok');
     return true;
 
   } catch (err) {
     log(`Error: ${err.message}`, 'error');
+    await rollback(err.message);
     return false;
   }
 }
@@ -381,7 +430,14 @@ async function finishUpdate(containerName, status) {
   if (!state) return;
   state.status = status;
   const finishedAt = new Date().toISOString();
-  saveUpdateLog(containerName, { image: state.image, startedAt: state.startedAt, finishedAt, status, log: state.log });
+  const entry = { image: state.image, startedAt: state.startedAt, finishedAt, status, log: state.log };
+  // A failed update stays visible on the row until it is superseded. Recording
+  // what the container looked like at the moment of failure is what lets a
+  // later check tell "still broken" from "someone updated it another way":
+  // either a new image digest or a different container id means the row moved
+  // on, and the stale red marker is dropped.
+  if (status === 'failed') entry.failedState = await captureContainerFingerprint(containerName);
+  saveUpdateLog(containerName, entry);
   appendActivityLog({ type: 'update-install', container: containerName, image: state.image, status, startedAt: state.startedAt, finishedAt });
   recordUpdate(status);
   // Refresh the cache BEFORE broadcasting: on 'done' the UI immediately reads
@@ -393,6 +449,24 @@ async function finishUpdate(containerName, status) {
   }
   broadcastStatus(containerName, status);
   setTimeout(() => delete activeUpdates[containerName], 30000);
+}
+
+// Digest + container id as they are right now; both are cheap and either one
+// changing is enough to consider a past failure superseded.
+async function captureContainerFingerprint(containerName) {
+  const fp = { localDigest: null, containerId: null };
+  try {
+    const ctr = await dockerApi('GET', `/containers/${encodeURIComponent(containerName)}/json`);
+    if (ctr && ctr.Id) fp.containerId = ctr.Id;
+    if (ctr && ctr.Image) {
+      const img = await dockerApi('GET', `/images/${encodeURIComponent(ctr.Image)}/json`);
+      for (const d of (img.RepoDigests || [])) {
+        const m = d.match(/@(sha256:[a-f0-9]+)/);
+        if (m) { fp.localDigest = m[1]; break; }
+      }
+    }
+  } catch (e) { console.warn('[update] Could not fingerprint', containerName, e.message); }
+  return fp;
 }
 
 async function refreshCacheAfterUpdate(containerName, image) {

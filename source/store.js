@@ -96,20 +96,6 @@ function rotateActivityLogIfNeeded(incomingBytes) {
   }
 }
 
-function rotateActivityLogIfNeeded(incomingBytes) {
-  activityBytesSinceCheck += incomingBytes;
-  if (activityBytesSinceCheck < 64 * 1024) return; // don't stat on every line
-  activityBytesSinceCheck = 0;
-  try {
-    const size = fs.statSync(ACTIVITY_LOG_FILE).size;
-    if (size < ACTIVITY_LOG_MAX_BYTES) return;
-    fs.renameSync(ACTIVITY_LOG_FILE, ACTIVITY_LOG_FILE + '.1');
-    console.log(`[activity-log] Rotated at ${size} bytes.`);
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.warn('[activity-log] Rotation failed:', e.message);
-  }
-}
-
 function appendActivityLog(entry) {
   const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
   try {
@@ -131,10 +117,33 @@ function saveUpdateLog(container, entry) {
   updateLogsStore.save(logs);
 }
 
+// A failed update leaves a red marker on the row that outlives page reloads.
+// It is cleared only when the container demonstrably moved on: a new image
+// digest or a new container id (someone updated it outside this tool). The
+// entry itself is kept — only its claim on the row is dropped.
+function resolveStaleUpdateLogs(fingerprints) {
+  const logs = loadUpdateLogs();
+  let changed = false;
+  for (const fp of fingerprints) {
+    const entry = logs[fp.container];
+    if (!entry || entry.status !== 'failed' || entry.resolved) continue;
+    const at = entry.failedState;
+    if (!at) continue;
+    const digestMoved = at.localDigest && fp.localDigest && at.localDigest !== fp.localDigest;
+    const containerReplaced = at.containerId && fp.containerId && at.containerId !== fp.containerId;
+    if (digestMoved || containerReplaced) {
+      entry.resolved = true;
+      changed = true;
+      console.log(`[update-logs] Failure marker for ${fp.container} cleared — the container changed since.`);
+    }
+  }
+  if (changed) updateLogsStore.save(logs);
+}
+
 module.exports = {
   createJsonStore,
   DATA_DIR,
   resultStore, rateLimitStore, updateLogsStore,
   appendActivityLog,
-  loadUpdateLogs, saveUpdateLog
+  loadUpdateLogs, saveUpdateLog, resolveStaleUpdateLogs
 };

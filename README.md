@@ -57,7 +57,7 @@ docker build -t docker-image-checker-king ./source
 
 - **No image pulls** — uses Docker Registry v2 API to fetch manifests and compare digests
 - **One-click updates** — "Clone & Swap" pattern: stop → rename → pull → create → start → remove old
-- **Resilient updates** — pull retries with backoff and a retry queue for updates started in bulk
+- **Resilient updates** — pull retries with backoff, automatic rollback, and a retry queue for updates started in bulk
 - **Anonymous auth** where possible (Docker Hub, ghcr.io, gcr.io, quay.io, ECR Public)
 - **Digest caching** — same image referenced by multiple containers is only checked once per run
 - **Real-time progress** via Server-Sent Events (SSE)
@@ -83,6 +83,11 @@ The update flow is built around that:
 - **Retry queue** — an update that still fails is not marked failed; it is parked in a queue that drains **one
   container at a time**. The row shows a purple sweeping bar while it waits. Only a container that fails its
   queued attempt too ends up failed.
+- **Rollback** — if the new container cannot be created or started, the previous one is renamed back and
+  restarted. The old container is deleted only once the swap has actually succeeded.
+- **Persistent failure marker** — a failed update leaves a red bar on the row that survives page reloads. It is
+  cleared when a later update succeeds, or when a check notices that the container moved on anyway (new image
+  digest or a new container id — e.g. you updated it outside this tool).
 
 ## Telegram Notifications
 

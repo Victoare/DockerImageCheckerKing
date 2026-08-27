@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 
-const { resultStore, rateLimitStore, appendActivityLog, loadUpdateLogs } = require('./store');
+const { resultStore, rateLimitStore, appendActivityLog, loadUpdateLogs, resolveStaleUpdateLogs } = require('./store');
 const { dockerApi } = require('./docker');
 const { parseImageReference, pickVersionLabel, fetchRemoteInfo, httpsGet } = require('./registry');
 const {
@@ -48,6 +48,9 @@ async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) 
   if (onTotal) onTotal({ count: containerList.length });
   const infoCache = {};
   const results = [];
+  // Image digest + container id per container, so a past update failure can be
+  // retired once the container has moved on by other means.
+  const fingerprints = [];
   for (let i = 0; i < containerList.length; i++) {
     const ctr = containerList[i];
     const name = (ctr.Names && ctr.Names[0]) ? ctr.Names[0].replace(/^\//, '') : ctr.Id.substring(0, 12);
@@ -56,6 +59,7 @@ async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) 
     const parsed = parseImageReference(image);
     if (!parsed) {
       const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: '-', tag: '-', result: 'Pinned', localDigest: '-', remoteDigest: '-', ...getNotifyInfo(name, ctr.State) };
+      fingerprints.push({ container: name, localDigest: null, containerId: ctr.Id });
       results.push(row); if (onResult) onResult(row); continue;
     }
     let localDigest = null;
@@ -96,8 +100,10 @@ async function runCheck(includeStopped, { onTotal, onProgress, onResult } = {}) 
     else if (localDigest === remoteDigest) result = 'UpToDate';
     else result = 'Outdated';
     const row = { container: name, image, state: ctr.State, status: ctr.Status, registry: parsed.registry, tag: parsed.tag, result, localDigest: localDigest || '-', remoteDigest: remoteDigest || '-', localVersion: localVersion || '-', remoteVersion: remoteVersion || '-', cached: fromCache, ...getNotifyInfo(name, ctr.State) };
+    fingerprints.push({ container: name, localDigest, containerId: ctr.Id });
     results.push(row); if (onResult) onResult(row);
   }
+  resolveStaleUpdateLogs(fingerprints);
   const timestamp = new Date().toISOString();
   resultStore.save({ timestamp, results });
   const outdatedResults = results.filter(r => r.result === 'Outdated');

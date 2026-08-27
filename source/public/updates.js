@@ -130,12 +130,15 @@ function hideRowProgress(idx) {
   setRowProgress(idx, 0);
 }
 
-// Update failed: keep the bar visible and turn it red.
+// Update failed: keep the bar visible and turn it red. The fill is driven to
+// full width because this also runs on page load, where nothing has advanced
+// the bar and a 0%-wide red fill would be invisible.
 function errorRowProgress(idx) {
   var bar = document.getElementById('row-progress-' + idx);
   if (!bar) return;
   bar.classList.remove('waiting', 'queued');
   bar.classList.add('active', 'error');
+  setRowProgress(idx, 100);
 }
 
 // Waiting in the retry queue: an indeterminate purple sweep, no percentage —
@@ -293,8 +296,11 @@ function restoreUpdateLogs() {
           }
         }
         setUpdateStatus(idx, entry.status);
-        // A previously failed update keeps its red seam bar after reload.
-        if (entry.status === 'failed') errorRowProgress(idx);
+        // A failed update keeps its red seam bar across reloads until it is
+        // superseded — the server marks the entry resolved once the container's
+        // image digest or container id has moved on (including an update done
+        // outside this tool), and only then does the bar go away.
+        if (entry.status === 'failed' && !entry.resolved) errorRowProgress(idx);
       }
     })
     .catch(function () { });
