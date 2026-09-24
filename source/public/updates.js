@@ -249,30 +249,89 @@ function subscribeUpdateStream(container, idx) {
     }
 
     src.close();
-    if (data.status === 'none') {
-      hideRowProgress(idx);
-      return;
-    }
-    setUpdateStatus(idx, data.status);
-    setUpdateButtonState(idx, 'idle');
-
-    if (data.status === 'done') {
-      // Success: fill to 100% then fade the bar out.
-      setRowProgress(idx, 100);
-      setTimeout(function () { hideRowProgress(idx); }, 700);
-      addLog('Update completed for ' + container, 'ok');
-      refreshRowAfterUpdate(container, idx);
-    } else {
-      // Failure: leave the bar in place, turned red.
-      errorRowProgress(idx);
-      addLog('Update failed for ' + container, 'error');
-    }
+    // 'none' means the server already forgot the update (it keeps a finished
+    // one for 30s only); the persisted log still knows how it ended.
+    if (data.status === 'none') { resolveFromUpdateLog(container); return; }
+    finishRowUpdate(container, idx, data.status);
   });
 
+  // The stream can drop while the update carries on server-side — most notably
+  // when the container being updated is the reverse proxy this UI is reached
+  // through. Giving up here would leave the row stuck on "running" forever, so
+  // keep asking the server until it answers, then pick up where it is.
   src.onerror = function () {
     src.close();
-    setUpdateButtonState(idx, 'idle');
+    recoverUpdateStream(container, 0);
   };
+}
+
+function finishRowUpdate(container, idx, status) {
+  setUpdateStatus(idx, status);
+  setUpdateButtonState(idx, 'idle');
+
+  if (status === 'done') {
+    // Success: fill to 100% then fade the bar out.
+    setRowProgress(idx, 100);
+    setTimeout(function () { hideRowProgress(idx); }, 700);
+    addLog('Update completed for ' + container, 'ok');
+    refreshRowAfterUpdate(container, idx);
+  } else {
+    // Failure: leave the bar in place, turned red.
+    errorRowProgress(idx);
+    addLog('Update failed for ' + container, 'error');
+  }
+}
+
+var UPDATE_RECOVER_DELAYS_MS = [1000, 2000, 5000, 10000];
+
+function recoverUpdateStream(container, attempt) {
+  var delay = UPDATE_RECOVER_DELAYS_MS[Math.min(attempt, UPDATE_RECOVER_DELAYS_MS.length - 1)];
+  setTimeout(function () {
+    fetch('/api/update-status')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (statuses) {
+        // The table may have been re-rendered meanwhile, so look the row up again.
+        var idx = getIdxByContainer(container);
+        if (idx === null) return;
+        var st = statuses && statuses[container];
+        if (st && (st.status === 'running' || st.status === 'queued')) {
+          // The stream replays the whole log, so start from an empty one.
+          var logEl = document.getElementById('update-log-' + idx);
+          if (logEl) logEl.innerHTML = '';
+          rowProgressState[idx] = { passive: false, pct: 0 };
+          subscribeUpdateStream(container, idx);
+        } else if (st && (st.status === 'done' || st.status === 'failed')) {
+          finishRowUpdate(container, idx, st.status);
+        } else {
+          resolveFromUpdateLog(container);
+        }
+      })
+      .catch(function () { recoverUpdateStream(container, attempt + 1); });
+  }, delay);
+}
+
+// Settle a row whose update is no longer tracked live, from the persisted log.
+function resolveFromUpdateLog(container) {
+  fetch('/api/update-logs')
+    .then(function (r) { return r.json(); })
+    .then(function (logs) {
+      var idx = getIdxByContainer(container);
+      if (idx === null) return;
+      var entry = logs && logs[container];
+      if (entry && (entry.status === 'done' || entry.status === 'failed')) {
+        var logEl = document.getElementById('update-log-' + idx);
+        if (logEl) logEl.innerHTML = '';
+        (entry.log || []).forEach(function (line) { addUpdateLog(idx, line); });
+        finishRowUpdate(container, idx, entry.status);
+      } else {
+        hideRowProgress(idx);
+        setUpdateButtonState(idx, 'idle');
+      }
+    })
+    .catch(function () {
+      var idx = getIdxByContainer(container);
+      if (idx !== null) { hideRowProgress(idx); setUpdateButtonState(idx, 'idle'); }
+    });
 }
 
 // Restore persisted update logs into the detail rows
