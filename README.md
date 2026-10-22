@@ -71,6 +71,9 @@ The update flow is built around that:
 - **Retry queue** — an update that still fails is not marked failed; it is parked in a queue that drains **one
   container at a time**. The row shows a purple sweeping bar while it waits. Only a container that fails its
   queued attempt too ends up failed.
+- **Compose secrets carried over** — Compose copies a secret that is not bind-mounted (e.g. `environment:`
+  sourced) into the container's own filesystem, which a config clone would lose. `/run/secrets` is copied from
+  the old container into the new one before it starts. Compose `configs:` are not covered yet.
 - **Rollback** — if the new container cannot be created or started, the previous one is renamed back and
   restarted. The old container is deleted only once the swap has actually succeeded.
 - **Persistent failure marker** — a failed update leaves a red bar on the row that survives page reloads. It is

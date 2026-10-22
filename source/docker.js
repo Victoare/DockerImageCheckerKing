@@ -16,7 +16,9 @@ const DOCKER_STREAM_STALL_MS = parseInt(process.env.DOCKER_STREAM_STALL_MS, 10) 
 // ---------------------------------------------------------------------------
 // Unified Docker socket helper
 // ---------------------------------------------------------------------------
-function dockerApi(method, apiPath, { body, stream, timeout } = {}) {
+// `raw: true` skips all JSON handling for the archive endpoints: a Buffer body
+// is sent as a tar stream, and the reply resolves as { statusCode, body: Buffer }.
+function dockerApi(method, apiPath, { body, stream, timeout, raw } = {}) {
   return new Promise((resolve, reject) => {
     // Guard every settle: a socket error after the response ended would
     // otherwise reject an already-resolved promise (an unhandled rejection).
@@ -27,7 +29,11 @@ function dockerApi(method, apiPath, { body, stream, timeout } = {}) {
     const headers = { 'Content-Type': 'application/json' };
     let data = null;
 
-    if (body !== undefined) {
+    if (Buffer.isBuffer(body)) {
+      data = body;
+      headers['Content-Type'] = 'application/x-tar';
+      headers['Content-Length'] = body.length;
+    } else if (body !== undefined) {
       data = JSON.stringify(body);
       headers['Content-Length'] = Buffer.byteLength(data);
     } else if (method === 'POST') {
@@ -65,6 +71,14 @@ function dockerApi(method, apiPath, { body, stream, timeout } = {}) {
         // A socket dropped mid-stream ends without 'end'; surface it as an error
         // instead of silently reporting a truncated pull as complete.
         res.on('error', (e) => fail(new Error(`Docker stream error on ${apiPath}: ${e.message}`)));
+        return;
+      }
+
+      if (raw) {
+        const chunks = [];
+        res.on('error', (e) => fail(new Error(`Docker response error on ${apiPath}: ${e.message}`)));
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => ok({ statusCode: res.statusCode, body: Buffer.concat(chunks) }));
         return;
       }
 

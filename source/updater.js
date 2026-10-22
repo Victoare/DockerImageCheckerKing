@@ -120,6 +120,74 @@ function broadcastStatus(container, status, { keepOpen = false, queuePosition = 
 }
 
 // ---------------------------------------------------------------------------
+// Secrets that live in the container's own filesystem
+//
+// Compose does not bind-mount a secret whose source is `environment:` (and
+// newer Compose versions copy `file:` secrets the same way): it writes the file
+// into the container's writable layer at create time. A clone built from
+// Config + HostConfig therefore starts without it, and the service fails to
+// authenticate. The old container still holds the files while it sits renamed
+// and stopped, so they are copied over between create and start.
+// ---------------------------------------------------------------------------
+const SECRETS_DIR = '/run/secrets';
+
+// One ustar directory entry, followed by the two zero blocks that end an
+// archive. Enough to create /run in an image that does not ship it.
+function tarDirectory(name) {
+  const header = Buffer.alloc(512);
+  const field = (offset, length, value) => header.write(value, offset, length, 'ascii');
+  field(0, 100, name.endsWith('/') ? name : name + '/');
+  field(100, 8, '0000755\0');
+  field(108, 8, '0000000\0');
+  field(116, 8, '0000000\0');
+  field(124, 12, '00000000000\0');
+  field(136, 12, Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0');
+  field(148, 8, '        ');   // checksum is computed with its own field as spaces
+  field(156, 1, '5');
+  field(257, 6, 'ustar\0');
+  field(263, 2, '00');
+  let sum = 0;
+  for (const b of header) sum += b;
+  field(148, 8, sum.toString(8).padStart(6, '0') + '\0 ');
+  return Buffer.concat([header, Buffer.alloc(1024)]);
+}
+
+// Returns true when there was nothing to copy or the copy succeeded; false
+// means the new container would start without its secrets.
+async function carryOverSecrets(oldInfo, newId, log) {
+  const mounted = (oldInfo.Mounts || []).map(m => m.Destination)
+    .filter(d => d === '/run' || d === SECRETS_DIR || d.startsWith(SECRETS_DIR + '/'));
+  if (mounted.includes('/run') || mounted.includes(SECRETS_DIR)) return true;   // the HostConfig clone brings these back
+
+  const archive = await dockerApi('GET', `/containers/${oldInfo.Id}/archive?path=${encodeURIComponent(SECRETS_DIR)}`, { raw: true });
+  if (archive.statusCode === 404) return true;   // no secrets in this container
+  if (archive.statusCode !== 200) {
+    log(`Could not read ${SECRETS_DIR} from the old container (HTTP ${archive.statusCode}).`, 'error');
+    return false;
+  }
+  // Some secrets are bind-mounted one by one and others copied: a tar of the
+  // whole directory would collide with the read-only mounts in the new one.
+  if (mounted.length) {
+    log(`${SECRETS_DIR} mixes bind-mounted and copied secrets; not copied. Recreate this container with "docker compose up -d".`, 'warn');
+    return true;
+  }
+
+  log(`Copying ${SECRETS_DIR} from the old container …`, 'info');
+  const put = () => dockerApi('PUT', `/containers/${newId}/archive?path=/run`, { body: archive.body, raw: true, timeout: 60000 });
+  let res = await put();
+  if (res.statusCode === 404) {
+    const mk = await dockerApi('PUT', `/containers/${newId}/archive?path=/`, { body: tarDirectory('run'), raw: true });
+    if (mk.statusCode === 200) res = await put();
+  }
+  if (res.statusCode !== 200) {
+    log(`Could not copy ${SECRETS_DIR} into the new container (HTTP ${res.statusCode}): ${res.body.toString().trim()}`, 'error');
+    return false;
+  }
+  log(`Secrets copied.`, 'ok');
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // CORE: "Clone & Swap" Update Logic (Watchtower style)
 // ---------------------------------------------------------------------------
 // Attempt 1 is the free-for-all one; a failure there parks the container in the
@@ -391,6 +459,11 @@ async function performUpdate(containerName, image) {
     }
     newId = createRes.body.Id;
 
+    if (!await carryOverSecrets(oldInfo, newId, log)) {
+      await rollback('secrets not copied');
+      return false;
+    }
+
     // 6. START NEW (only if it was running before)
     if (wasRunning) {
       log(`Starting new container …`, 'info');
@@ -513,4 +586,4 @@ async function refreshCacheAfterUpdate(containerName, image) {
   } catch (e) { console.warn('[cache] Failed to refresh after update:', e.message); }
 }
 
-module.exports = { activeUpdates, runUpdate, broadcastLog, broadcastStatus, queuePosition, retryQueue };
+module.exports = { activeUpdates, runUpdate, broadcastLog, broadcastStatus, queuePosition, retryQueue, carryOverSecrets };
